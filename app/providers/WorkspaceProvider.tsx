@@ -16,28 +16,31 @@ const WorkspaceContext = createContext<WorkspaceContextType>({
   isSynced: false,
 });
 
-export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
+export function WorkspaceProvider({ 
+  children, 
+  documentId 
+}: { 
+  children: React.ReactNode; 
+  documentId: string 
+}) {
   const room = useRoom();
   const [doc, setDoc] = useState<Y.Doc | null>(null);
   const [isSynced, setIsSynced] = useState<boolean>(false);
 
   useEffect(() => {
-    // 1. Initialize core Yjs Document
     const yDoc = new Y.Doc();
     setDoc(yDoc);
 
-    // 2. Set up local-first IndexedDB persistence
-    const idbProvider = new IndexeddbPersistence('kinetix-workspace-db', yDoc);
-
-    // 3. Set up Liveblocks WebSocket Yjs provider for real-time multiplayer sync
+    // Unique IndexedDB store per document ID
+    const idbProvider = new IndexeddbPersistence(`kinetix-db-${documentId}`, yDoc);
     const yProvider = new LiveblocksYjsProvider(room, yDoc);
 
     idbProvider.on('synced', () => {
-      console.log('Loaded from local IndexedDB');
+      console.log(`Loaded document ${documentId} from IndexedDB`);
     });
 
-    yProvider.on('sync', (isSynced: boolean) => {
-      setIsSynced(isSynced);
+    yProvider.on('sync', (synced: boolean) => {
+      setIsSynced(synced);
     });
 
     return () => {
@@ -45,7 +48,7 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
       yProvider.destroy();
       yDoc.destroy();
     };
-  }, [room]);
+  }, [room, documentId]);
 
   return (
     <WorkspaceContext.Provider value={{ doc, isSynced }}>
