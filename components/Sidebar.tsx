@@ -1,15 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { useRouter, useParams } from 'next/navigation';
+import { useRouter } from 'next/navigation';
 import { getDocuments, saveDocumentMeta, deleteDocumentMeta, DocMeta } from '@/lib/storage';
 import { Plus, FileText, Trash2, Zap } from 'lucide-react';
 
-export function Sidebar() {
+export function Sidebar({ currentDocId }: { currentDocId: string }) {
   const router = useRouter();
-  const params = useParams();
-  const currentDocId = params?.id as string;
-  
   const [docs, setDocs] = useState<DocMeta[]>([]);
 
   useEffect(() => {
