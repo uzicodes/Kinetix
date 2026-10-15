@@ -9,6 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@liveblocks/client": "^3.24.3",
+    "@liveblocks/react": "^3.24.3",
+    "@liveblocks/yjs": "^3.24.3",
     "clsx": "^2.1.1",
     "lucide-react": "^1.57.0",
     "next": "16.4.1",
