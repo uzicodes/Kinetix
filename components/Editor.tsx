@@ -8,14 +8,14 @@ import { MarkdownPreview } from '@/components/MarkdownPreview';
 import { ActiveUsers } from '@/components/ActiveUsers';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { Whiteboard } from '@/components/Whiteboard';
-import { Columns2, Eye, PenLine, FileText, Palette, Layout } from 'lucide-react';
+import { Columns2, Eye, PenLine, FileText, Palette, Layout, Download, Wifi, WifiOff } from 'lucide-react';
 import * as Y from 'yjs';
 
 type ViewMode = 'edit' | 'split' | 'preview';
 type WorkspaceMode = 'doc' | 'split' | 'whiteboard';
 
 export function Editor({ documentId }: { documentId: string }) {
-  const { doc, isSynced } = useWorkspace();
+  const { doc, isSynced, isSimulatedOffline, toggleSimulatedOffline } = useWorkspace();
   const [content, setContent] = useState<string>('');
   const [title, setTitle] = useState<string>('Untitled Document');
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('doc');
@@ -122,6 +122,23 @@ export function Editor({ documentId }: { documentId: string }) {
         saveDocumentMeta(documentId, newTitle);
       });
     }
+  };
+
+  const handleExportMarkdown = () => {
+    const safeName =
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '') || 'document';
+    const blob = new Blob([content], { type: 'text/markdown;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${safeName}.md`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
@@ -235,6 +252,44 @@ export function Editor({ documentId }: { documentId: string }) {
               </button>
             </div>
           )}
+
+          {/* Action buttons: Export .md & Simulate Offline Toggle */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleExportMarkdown}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-zinc-800 transition-colors shadow-sm"
+              title="Download document as Markdown (.md)"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Export .md</span>
+            </button>
+
+            <button
+              onClick={toggleSimulatedOffline}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border shadow-sm ${
+                isSimulatedOffline
+                  ? 'bg-amber-950 text-amber-300 border-amber-800/80 hover:bg-amber-900'
+                  : 'bg-zinc-900 text-zinc-400 border-zinc-800 hover:text-zinc-200 hover:bg-zinc-800'
+              }`}
+              title={
+                isSimulatedOffline
+                  ? 'Currently Offline: Click to reconnect WebSocket and merge edits'
+                  : 'Simulate network cut to test offline CRDT merging'
+              }
+            >
+              {isSimulatedOffline ? (
+                <>
+                  <Wifi className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Reconnect Sync</span>
+                </>
+              ) : (
+                <>
+                  <WifiOff className="w-3.5 h-3.5 text-zinc-400" />
+                  <span className="hidden sm:inline">Simulate Offline</span>
+                </>
+              )}
+            </button>
+          </div>
 
           {/* Connection & Persistence Status Badge */}
           <ConnectionStatus />

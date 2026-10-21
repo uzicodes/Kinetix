@@ -2,9 +2,11 @@
 
 import React, { useEffect, useState } from 'react';
 import { useStatus } from '@liveblocks/react';
-import { WifiOff } from 'lucide-react';
+import { useWorkspace } from '@/app/providers/WorkspaceProvider';
+import { WifiOff, RadioTower } from 'lucide-react';
 
 export function ConnectionStatus() {
+  const { isSimulatedOffline } = useWorkspace();
   const [isOnline, setIsOnline] = useState<boolean>(() => {
     return typeof navigator !== 'undefined' ? navigator.onLine : true;
   });
@@ -23,6 +25,18 @@ export function ConnectionStatus() {
       window.removeEventListener('offline', handleOffline);
     };
   }, []);
+
+  if (isSimulatedOffline) {
+    return (
+      <span
+        title="Offline Mode is simulated. WebSocket disconnected; changes buffered in local IndexedDB."
+        className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-950 text-amber-300 border border-amber-800/80 shadow-sm"
+      >
+        <RadioTower className="w-3 h-3 text-amber-400 animate-pulse" />
+        <span>Offline (Simulated) — Local Buffer</span>
+      </span>
+    );
+  }
 
   const isDisconnected = !isOnline || roomStatus === 'disconnected';
   const isReconnecting = isOnline && (roomStatus === 'connecting' || roomStatus === 'reconnecting');
@@ -61,4 +75,3 @@ export function ConnectionStatus() {
     </span>
   );
 }
-
