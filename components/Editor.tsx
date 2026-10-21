@@ -7,15 +7,18 @@ import { applyTextDelta } from '@/lib/diff';
 import { MarkdownPreview } from '@/components/MarkdownPreview';
 import { ActiveUsers } from '@/components/ActiveUsers';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
-import { Columns2, Eye, PenLine } from 'lucide-react';
+import { Whiteboard } from '@/components/Whiteboard';
+import { Columns2, Eye, PenLine, FileText, Palette, Layout } from 'lucide-react';
 import * as Y from 'yjs';
 
 type ViewMode = 'edit' | 'split' | 'preview';
+type WorkspaceMode = 'doc' | 'split' | 'whiteboard';
 
 export function Editor({ documentId }: { documentId: string }) {
   const { doc, isSynced } = useWorkspace();
   const [content, setContent] = useState<string>('');
   const [title, setTitle] = useState<string>('Untitled Document');
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('doc');
   const [viewMode, setViewMode] = useState<ViewMode>('split');
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
@@ -151,79 +154,164 @@ export function Editor({ documentId }: { documentId: string }) {
 
           <div className="h-4 w-px bg-zinc-800 hidden sm:block" />
 
-          {/* Mode Switcher */}
+          {/* Primary Workspace Mode Switcher */}
           <div className="flex items-center p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-400">
             <button
-              onClick={() => setViewMode('edit')}
+              onClick={() => setWorkspaceMode('doc')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                viewMode === 'edit'
+                workspaceMode === 'doc'
                   ? 'bg-zinc-800 text-zinc-100 shadow-sm'
                   : 'hover:text-zinc-200'
               }`}
-              title="Edit Mode (Code only)"
+              title="Document Editor Mode"
             >
-              <PenLine className="w-3.5 h-3.5" />
-              <span>Write</span>
+              <FileText className="w-3.5 h-3.5" />
+              <span>Document</span>
             </button>
             <button
-              onClick={() => setViewMode('split')}
+              onClick={() => setWorkspaceMode('split')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                viewMode === 'split'
+                workspaceMode === 'split'
                   ? 'bg-zinc-800 text-zinc-100 shadow-sm'
                   : 'hover:text-zinc-200'
               }`}
-              title="Split Mode (Editor + Preview)"
+              title="Split Mode (Document & Whiteboard)"
             >
-              <Columns2 className="w-3.5 h-3.5" />
-              <span>Split</span>
+              <Layout className="w-3.5 h-3.5" />
+              <span>Split View</span>
             </button>
             <button
-              onClick={() => setViewMode('preview')}
+              onClick={() => setWorkspaceMode('whiteboard')}
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                viewMode === 'preview'
+                workspaceMode === 'whiteboard'
                   ? 'bg-zinc-800 text-zinc-100 shadow-sm'
                   : 'hover:text-zinc-200'
               }`}
-              title="Preview Mode (Markdown rendered)"
+              title="Whiteboard Canvas Mode"
             >
-              <Eye className="w-3.5 h-3.5" />
-              <span>Preview</span>
+              <Palette className="w-3.5 h-3.5" />
+              <span>Whiteboard</span>
             </button>
           </div>
+
+          {/* Document-specific sub-mode switcher (visible when document is showing) */}
+          {workspaceMode === 'doc' && (
+            <div className="flex items-center p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-400">
+              <button
+                onClick={() => setViewMode('edit')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors ${
+                  viewMode === 'edit'
+                    ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                    : 'hover:text-zinc-200'
+                }`}
+                title="Edit Markdown source"
+              >
+                <PenLine className="w-3.5 h-3.5" />
+                <span>Write</span>
+              </button>
+              <button
+                onClick={() => setViewMode('split')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors ${
+                  viewMode === 'split'
+                    ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                    : 'hover:text-zinc-200'
+                }`}
+                title="Split Markdown & Preview"
+              >
+                <Columns2 className="w-3.5 h-3.5" />
+                <span>Split</span>
+              </button>
+              <button
+                onClick={() => setViewMode('preview')}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-md transition-colors ${
+                  viewMode === 'preview'
+                    ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                    : 'hover:text-zinc-200'
+                }`}
+                title="Rendered Markdown Preview"
+              >
+                <Eye className="w-3.5 h-3.5" />
+                <span>Preview</span>
+              </button>
+            </div>
+          )}
 
           {/* Connection & Persistence Status Badge */}
           <ConnectionStatus />
         </div>
       </div>
 
-      {/* Editor & Preview Pane */}
+      {/* Dynamic Content Pane based on workspaceMode */}
       <div className="flex-1 flex gap-6 min-h-[70vh]">
-        {/* Write Pane */}
-        {(viewMode === 'edit' || viewMode === 'split') && (
-          <div className={`flex flex-col ${viewMode === 'split' ? 'w-1/2' : 'w-full'}`}>
-            <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
-              <span>Markdown Source</span>
-              <span className="text-[10px] text-zinc-600 font-mono">CRDT Delta Sync</span>
-            </div>
-            <textarea
-              ref={textareaRef}
-              value={content}
-              onChange={handleChange}
-              placeholder="# Welcome to Kinetix&#10;&#10;Start typing markdown notes here...&#10;- Instant peer collaboration&#10;- Character-level delta CRDT&#10;- Live rendered preview"
-              className="w-full flex-1 p-5 bg-zinc-900 border border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-700 font-mono text-sm leading-relaxed resize-none shadow-sm text-zinc-200 placeholder:text-zinc-600"
-            />
+        {/* Document Editor Mode */}
+        {workspaceMode === 'doc' && (
+          <div className="flex-1 flex gap-6 w-full">
+            {/* Write Pane */}
+            {(viewMode === 'edit' || viewMode === 'split') && (
+              <div className={`flex flex-col ${viewMode === 'split' ? 'w-1/2' : 'w-full'}`}>
+                <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
+                  <span>Markdown Source</span>
+                  <span className="text-[10px] text-zinc-600 font-mono">CRDT Delta Sync</span>
+                </div>
+                <textarea
+                  ref={textareaRef}
+                  value={content}
+                  onChange={handleChange}
+                  placeholder="# Welcome to Kinetix&#10;&#10;Start typing markdown notes here...&#10;- Instant peer collaboration&#10;- Character-level delta CRDT&#10;- Live rendered preview"
+                  className="w-full flex-1 p-5 bg-zinc-900 border border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-700 font-mono text-sm leading-relaxed resize-none shadow-sm text-zinc-200 placeholder:text-zinc-600"
+                />
+              </div>
+            )}
+
+            {/* Live Preview Pane */}
+            {(viewMode === 'preview' || viewMode === 'split') && (
+              <div className={`flex flex-col ${viewMode === 'split' ? 'w-1/2' : 'w-full'}`}>
+                <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
+                  <span>Rendered Preview</span>
+                  <span className="text-[10px] text-emerald-500 font-mono">Live GFM</span>
+                </div>
+                <div className="w-full flex-1 p-6 bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-y-auto">
+                  <MarkdownPreview content={content} />
+                </div>
+              </div>
+            )}
           </div>
         )}
 
-        {/* Live Preview Pane */}
-        {(viewMode === 'preview' || viewMode === 'split') && (
-          <div className={`flex flex-col ${viewMode === 'split' ? 'w-1/2' : 'w-full'}`}>
-            <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
-              <span>Rendered Preview</span>
-              <span className="text-[10px] text-emerald-500 font-mono">Live GFM</span>
+        {/* Full Whiteboard Mode */}
+        {workspaceMode === 'whiteboard' && (
+          <div className="flex-1 flex flex-col w-full h-full min-h-[75vh]">
+            <Whiteboard documentId={documentId} />
+          </div>
+        )}
+
+        {/* Split View Mode: Document on Left, Whiteboard on Right */}
+        {workspaceMode === 'split' && (
+          <div className="flex-1 flex flex-col lg:flex-row gap-6 w-full">
+            {/* Document Side */}
+            <div className="flex flex-col w-full lg:w-1/2 h-[75vh]">
+              <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
+                <span>Document Notes</span>
+                <span className="text-[10px] text-zinc-600 font-mono">Y.Text CRDT</span>
+              </div>
+              <textarea
+                ref={textareaRef}
+                value={content}
+                onChange={handleChange}
+                placeholder="Type your notes here while sketching on the right..."
+                className="w-full flex-1 p-5 bg-zinc-900 border border-zinc-800 rounded-xl focus:outline-none focus:ring-2 focus:ring-zinc-700 font-mono text-sm leading-relaxed resize-none shadow-sm text-zinc-200 placeholder:text-zinc-600"
+              />
             </div>
-            <div className="w-full flex-1 p-6 bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-y-auto">
-              <MarkdownPreview content={content} />
+
+            {/* Whiteboard Side */}
+            <div className="flex flex-col w-full lg:w-1/2 h-[75vh]">
+              <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
+                <span>Collaborative Canvas</span>
+                <span className="text-[10px] text-emerald-500 font-mono">Y.Array CRDT</span>
+              </div>
+              <div className="flex-1 w-full h-full">
+                <Whiteboard documentId={documentId} />
+              </div>
             </div>
           </div>
         )}
