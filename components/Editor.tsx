@@ -5,6 +5,8 @@ import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import { saveDocumentMeta } from '@/lib/storage';
 import { applyTextDelta } from '@/lib/diff';
 import { MarkdownPreview } from '@/components/MarkdownPreview';
+import { ActiveUsers } from '@/components/ActiveUsers';
+import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { Columns2, Eye, PenLine } from 'lucide-react';
 import * as Y from 'yjs';
 
@@ -143,7 +145,12 @@ export function Editor({ documentId }: { documentId: string }) {
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          {/* Active Multiplayer Presence */}
+          <ActiveUsers />
+
+          <div className="h-4 w-px bg-zinc-800 hidden sm:block" />
+
           {/* Mode Switcher */}
           <div className="flex items-center p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-400">
             <button
@@ -184,9 +191,8 @@ export function Editor({ documentId }: { documentId: string }) {
             </button>
           </div>
 
-          <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950 text-emerald-400 border border-emerald-800/50">
-            ● Synced & Live
-          </span>
+          {/* Connection & Persistence Status Badge */}
+          <ConnectionStatus />
         </div>
       </div>
 
