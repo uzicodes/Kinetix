@@ -13,6 +13,7 @@ export function ConnectionStatus() {
 
   const roomStatus = useStatus();
 
+  // Dynamically listen to browser network events
   useEffect(() => {
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
@@ -33,7 +34,7 @@ export function ConnectionStatus() {
         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-950 text-amber-300 border border-amber-800/80 shadow-sm"
       >
         <RadioTower className="w-3 h-3 text-amber-400 animate-pulse" />
-        <span>Offline (Simulated) — Local Buffer</span>
+        <span>Offline (Simulated) — Stored locally in IndexedDB</span>
       </span>
     );
   }
@@ -48,7 +49,7 @@ export function ConnectionStatus() {
         className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-950/80 text-amber-400 border border-amber-800/60 shadow-sm"
       >
         <WifiOff className="w-3 h-3 text-amber-400" />
-        <span>Offline — Saved to IndexedDB</span>
+        <span>Offline — Stored locally in IndexedDB</span>
       </span>
     );
   }
@@ -71,7 +72,7 @@ export function ConnectionStatus() {
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950 text-emerald-400 border border-emerald-800/50 shadow-sm"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-      <span>Online & Syncing</span>
+      <span>Live & Syncing</span>
     </span>
   );
 }

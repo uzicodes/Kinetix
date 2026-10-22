@@ -5,7 +5,7 @@ import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import { saveDocumentMeta } from '@/lib/storage';
 import { applyTextDelta } from '@/lib/diff';
 import { MarkdownPreview } from '@/components/MarkdownPreview';
-import { ActiveUsers } from '@/components/ActiveUsers';
+import { Avatars } from '@/components/Avatars';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { Whiteboard } from '@/components/Whiteboard';
 import { Columns2, Eye, PenLine, FileText, Palette, Layout, Download, Wifi, WifiOff } from 'lucide-react';
@@ -167,7 +167,7 @@ export function Editor({ documentId }: { documentId: string }) {
 
         <div className="flex flex-wrap items-center gap-3">
           {/* Active Multiplayer Presence */}
-          <ActiveUsers />
+          <Avatars />
 
           <div className="h-4 w-px bg-zinc-800 hidden sm:block" />
 
