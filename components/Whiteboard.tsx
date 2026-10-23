@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import * as Y from 'yjs';
-import { Pencil, Eraser, Undo2, Trash2 } from 'lucide-react';
+import { Pencil, Eraser, Undo2, Trash2, ImageDown } from 'lucide-react';
 
 export interface Point {
   x: number;
@@ -256,6 +256,47 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     });
   };
 
+  const handleExportPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // Create an offscreen export canvas to composite a clean dark background
+    const exportCanvas = document.createElement('canvas');
+    exportCanvas.width = canvas.width;
+    exportCanvas.height = canvas.height;
+    const ctx = exportCanvas.getContext('2d');
+    if (!ctx) return;
+
+    // Paint clean dark background matching UI theme (#09090b / zinc-950)
+    ctx.fillStyle = '#09090b';
+    ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
+
+    // Draw faint grid dots matching canvas aesthetic
+    ctx.fillStyle = '#27272a';
+    const dpr = window.devicePixelRatio || 1;
+    const dotSpacing = 24 * dpr;
+    const dotRadius = 1 * dpr;
+    for (let x = dotSpacing / 2; x < exportCanvas.width; x += dotSpacing) {
+      for (let y = dotSpacing / 2; y < exportCanvas.height; y += dotSpacing) {
+        ctx.beginPath();
+        ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    // Render whiteboard strokes on top
+    ctx.drawImage(canvas, 0, 0);
+
+    // Trigger file download
+    const dataUrl = exportCanvas.toDataURL('image/png');
+    const link = document.createElement('a');
+    link.href = dataUrl;
+    link.download = `kinetix-whiteboard-${documentId}.png`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
   return (
     <div ref={containerRef} className="relative flex flex-col w-full h-full min-h-[70vh] select-none">
       {/* Floating Whiteboard Toolbar */}
@@ -330,7 +371,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </div>
         )}
 
-        {/* Actions: Undo / Clear */}
+        {/* Actions: Undo / Clear / Export PNG */}
         <div className="flex items-center gap-1">
           <button
             onClick={handleUndo}
@@ -347,6 +388,16 @@ export function Whiteboard({ documentId }: { documentId: string }) {
             title="Clear Board"
           >
             <Trash2 className="w-4 h-4" />
+          </button>
+          <div className="h-4 w-px bg-zinc-800 my-auto" />
+          <button
+            onClick={handleExportPNG}
+            disabled={strokeCount === 0}
+            className="px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg flex items-center gap-1 text-xs font-medium"
+            title="Export Whiteboard as PNG"
+          >
+            <ImageDown className="w-4 h-4" />
+            <span className="text-[11px] hidden sm:inline">PNG</span>
           </button>
         </div>
       </div>
