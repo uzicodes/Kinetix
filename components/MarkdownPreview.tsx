@@ -8,7 +8,7 @@ interface MarkdownPreviewProps {
   content: string;
 }
 
-export function MarkdownPreview({ content }: MarkdownPreviewProps) {
+export const MarkdownPreview = React.memo(function MarkdownPreview({ content }: MarkdownPreviewProps) {
   if (!content.trim()) {
     return (
       <div className="flex items-center justify-center h-full text-zinc-600 text-sm italic">
@@ -113,5 +113,5 @@ export function MarkdownPreview({ content }: MarkdownPreviewProps) {
       </ReactMarkdown>
     </div>
   );
-}
+});
 

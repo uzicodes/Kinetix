@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import { saveDocumentMeta } from '@/lib/storage';
 import { applyTextDelta } from '@/lib/diff';
@@ -11,22 +11,58 @@ import { Whiteboard } from '@/components/Whiteboard';
 import { FileText, PenTool, Columns, Eye, Download, Wifi, WifiOff } from 'lucide-react';
 import * as Y from 'yjs';
 
-// 1. viewMode state supporting three views
+// Unique origin identifier for local CRDT transactions to prevent echo loops
+const LOCAL_TRANSACTION_ORIGIN = 'kinetix-local-editor';
+
 type ViewMode = 'notes' | 'whiteboard' | 'split';
 
 export function Editor({ documentId }: { documentId: string }) {
   const { doc, isSynced, isSimulatedOffline, toggleSimulatedOffline } = useWorkspace();
   const [content, setContent] = useState<string>('');
+  const [previewContent, setPreviewContent] = useState<string>('');
   const [title, setTitle] = useState<string>('Untitled Document');
   const [viewMode, setViewMode] = useState<ViewMode>('notes');
   const [showPreview, setShowPreview] = useState<boolean>(true);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
-  const isRemoteChange = useRef<boolean>(false);
   const sharedTextRef = useRef<Y.Text | null>(null);
   const prevContentRef = useRef<string>('');
+  const titleDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 4. Auto-title and Yjs observer logic intact
+  // 1. Debounce Markdown preview parsing to decouple heavy AST renders from 60fps typing
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setPreviewContent(content);
+    }, 150);
+
+    return () => clearTimeout(handler);
+  }, [content]);
+
+  // 2. Debounced document title & metadata persistence to avoid blocking the main thread
+  const updateDocumentTitle = (text: string) => {
+    const firstLine = text.split('\n')[0];
+    const newTitle = firstLine.trim() ? firstLine.slice(0, 30) : 'Untitled Document';
+    setTitle(newTitle);
+
+    if (titleDebounceRef.current) {
+      clearTimeout(titleDebounceRef.current);
+    }
+
+    titleDebounceRef.current = setTimeout(() => {
+      saveDocumentMeta(documentId, newTitle);
+    }, 300);
+  };
+
+  // Cleanup debounce timers on unmount
+  useEffect(() => {
+    return () => {
+      if (titleDebounceRef.current) {
+        clearTimeout(titleDebounceRef.current);
+      }
+    };
+  }, []);
+
+  // 3. Yjs CRDT binding with origin filtering to prevent bidirectional state loops & cursor jumps
   useEffect(() => {
     if (!doc) return;
 
@@ -34,59 +70,74 @@ export function Editor({ documentId }: { documentId: string }) {
     sharedTextRef.current = yText;
     const initialText = yText.toString();
     setContent(initialText);
+    setPreviewContent(initialText);
     prevContentRef.current = initialText;
 
-    // Extract title from the first line of text if available
     const firstLine = initialText.split('\n')[0];
     if (firstLine.trim()) {
       setTitle(firstLine.slice(0, 30));
     }
 
     const observer = (event: Y.YTextEvent) => {
+      // CRITICAL FIX: Skip local transactions!
+      // When local typing dispatches a change, the textarea and React content state are
+      // already up-to-date. Re-applying them here destroys the browser's native caret position.
+      if (event.transaction.origin === LOCAL_TRANSACTION_ORIGIN) {
+        return;
+      }
+
       const updatedText = yText.toString();
       prevContentRef.current = updatedText;
 
       const textarea = textareaRef.current;
       const hasFocus = typeof document !== 'undefined' && document.activeElement === textarea;
 
-      // Preserve cursor position during concurrent remote edits
+      // Adjust selection and cursor position for remote changes if textarea is focused
       if (textarea && hasFocus && event.delta) {
-        const currentPos = textarea.selectionStart;
-        let cursorOffset = 0;
+        const currentStart = textarea.selectionStart;
+        const currentEnd = textarea.selectionEnd;
+        let startOffset = 0;
+        let endOffset = 0;
         let index = 0;
 
         event.delta.forEach((op) => {
           if (op.retain) {
             index += op.retain;
-          }
-          if (op.insert) {
+          } else if (op.insert) {
             const len = typeof op.insert === 'string' ? op.insert.length : 1;
-            if (index <= currentPos) {
-              cursorOffset += len;
+            if (index <= currentStart) {
+              startOffset += len;
+            }
+            if (index <= currentEnd) {
+              endOffset += len;
             }
             index += len;
-          }
-          if (op.delete) {
-            if (index < currentPos) {
-              cursorOffset -= Math.min(op.delete, currentPos - index);
+          } else if (op.delete) {
+            if (index < currentStart) {
+              startOffset -= Math.min(op.delete, currentStart - index);
+            }
+            if (index < currentEnd) {
+              endOffset -= Math.min(op.delete, currentEnd - index);
             }
           }
         });
 
-        const nextPos = Math.max(0, currentPos + cursorOffset);
-        isRemoteChange.current = true;
+        const nextStart = Math.max(0, currentStart + startOffset);
+        const nextEnd = Math.max(0, currentEnd + endOffset);
+
         setContent(updatedText);
 
+        // Flawlessly restore caret range after remote DOM update
         requestAnimationFrame(() => {
-          if (textareaRef.current) {
-            textareaRef.current.setSelectionRange(nextPos, nextPos);
+          if (textareaRef.current && document.activeElement === textareaRef.current) {
+            textareaRef.current.setSelectionRange(nextStart, nextEnd);
           }
         });
       } else {
-        isRemoteChange.current = true;
         setContent(updatedText);
       }
 
+      // Sync document title from remote changes
       const line = updatedText.split('\n')[0];
       const newTitle = line.trim() ? line.slice(0, 30) : 'Untitled Document';
       setTitle(newTitle);
@@ -100,28 +151,23 @@ export function Editor({ documentId }: { documentId: string }) {
     };
   }, [doc, documentId]);
 
+  // 4. Synchronous, ultra-responsive local input handler
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     const oldText = prevContentRef.current;
+
+    // Synchronously update textarea state so typing feels instantaneous (native speed)
     setContent(newText);
     prevContentRef.current = newText;
 
-    if (isRemoteChange.current) {
-      isRemoteChange.current = false;
-      return;
-    }
+    // Debounce the metadata save to eliminate synchronous localStorage IO lag
+    updateDocumentTitle(newText);
 
+    // Dispatch minimal character-level delta tagged with our local origin
     if (doc && sharedTextRef.current) {
       doc.transact(() => {
-        const yText = sharedTextRef.current!;
-        // Character-level minimal diff to prevent cursor overwriting
-        applyTextDelta(yText, oldText, newText);
-
-        const line = newText.split('\n')[0];
-        const newTitle = line.trim() ? line.slice(0, 30) : 'Untitled Document';
-        setTitle(newTitle);
-        saveDocumentMeta(documentId, newTitle);
-      });
+        applyTextDelta(sharedTextRef.current!, oldText, newText);
+      }, LOCAL_TRANSACTION_ORIGIN);
     }
   };
 
@@ -142,7 +188,10 @@ export function Editor({ documentId }: { documentId: string }) {
     URL.revokeObjectURL(url);
   };
 
-  const wordCount = content.trim() ? content.trim().split(/\s+/).length : 0;
+  const wordCount = useMemo(() => {
+    return content.trim() ? content.trim().split(/\s+/).length : 0;
+  }, [content]);
+
   const charCount = content.length;
 
   if (!isSynced) {
@@ -167,12 +216,12 @@ export function Editor({ documentId }: { documentId: string }) {
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
-          {/* 4. Active Presence Avatars */}
+          {/* Active Presence Avatars */}
           <Avatars />
 
           <div className="h-4 w-px bg-zinc-800 hidden sm:block" />
 
-          {/* 2. Segmented Toggle Button Group using FileText, PenTool, Columns */}
+          {/* Segmented Toggle Button Group: Notes | Whiteboard | Split */}
           <div className="flex items-center p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-400">
             <button
               onClick={() => setViewMode('notes')}
@@ -266,12 +315,12 @@ export function Editor({ documentId }: { documentId: string }) {
             </button>
           </div>
 
-          {/* 4. Real-time Network Indicator */}
+          {/* Real-time Network Indicator */}
           <ConnectionStatus />
         </div>
       </div>
 
-      {/* 3. Conditional View Rendering: 'notes' | 'whiteboard' | 'split' */}
+      {/* Conditional View Rendering: 'notes' | 'whiteboard' | 'split' */}
       <div className="flex-1 flex gap-6 min-h-[70vh]">
         {/* 'notes': Markdown editor + toggleable preview */}
         {viewMode === 'notes' && (
@@ -291,7 +340,7 @@ export function Editor({ documentId }: { documentId: string }) {
               />
             </div>
 
-            {/* Toggleable Live Preview */}
+            {/* Toggleable Live Preview with debounced content */}
             {showPreview && (
               <div className="flex flex-col w-full md:w-1/2">
                 <div className="text-[11px] font-medium tracking-wide text-zinc-500 uppercase mb-2 px-1 flex items-center justify-between">
@@ -299,7 +348,7 @@ export function Editor({ documentId }: { documentId: string }) {
                   <span className="text-[10px] text-emerald-500 font-mono">Live GFM</span>
                 </div>
                 <div className="w-full flex-1 p-6 bg-zinc-900/50 border border-zinc-800 rounded-xl overflow-y-auto">
-                  <MarkdownPreview content={content} />
+                  <MarkdownPreview content={previewContent} />
                 </div>
               </div>
             )}
