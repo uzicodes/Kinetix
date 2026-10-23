@@ -1,49 +1,29 @@
 'use client';
 
-import React, { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import * as Y from 'yjs';
-import {
-  Pencil,
-  StickyNote,
-  Eraser,
-  Trash2,
-  Undo2,
-  X,
-  Palette,
-} from 'lucide-react';
+import { Pencil, Eraser, Undo2, Trash2 } from 'lucide-react';
 
 export interface Point {
   x: number;
   y: number;
 }
 
-export interface StrokeShape {
+export interface Stroke {
   id: string;
-  type: 'stroke';
   points: Point[];
   color: string;
   width: number;
 }
 
-export interface NoteShape {
-  id: string;
-  type: 'note';
-  x: number;
-  y: number;
-  text: string;
-  color: string;
-}
-
-export type Shape = StrokeShape | NoteShape;
-
-const COLORS = [
+const PALETTE = [
   { label: 'Emerald', value: '#10B981' },
   { label: 'Cyan', value: '#06B6D4' },
   { label: 'Purple', value: '#8B5CF6' },
   { label: 'Amber', value: '#F59E0B' },
   { label: 'Rose', value: '#F43F5E' },
-  { label: 'White', value: '#E4E4E7' },
+  { label: 'White', value: '#FFFFFF' },
 ];
 
 const STROKE_WIDTHS = [
@@ -52,225 +32,235 @@ const STROKE_WIDTHS = [
   { label: 'Bold', value: 8 },
 ];
 
-function pointsToSvgPath(points: Point[]): string {
-  if (points.length === 0) return '';
-  if (points.length === 1) {
-    return `M ${points[0].x} ${points[0].y} L ${points[0].x + 0.1} ${points[0].y + 0.1}`;
-  }
-
-  let d = `M ${points[0].x} ${points[0].y}`;
-  for (let i = 1; i < points.length; i++) {
-    const prev = points[i - 1];
-    const curr = points[i];
-    const midX = (prev.x + curr.x) / 2;
-    const midY = (prev.y + curr.y) / 2;
-    d += ` Q ${prev.x} ${prev.y}, ${midX} ${midY}`;
-  }
-  const last = points[points.length - 1];
-  d += ` L ${last.x} ${last.y}`;
-  return d;
+// Distance between a point and a line segment
+function distanceToSegment(p: Point, a: Point, b: Point): number {
+  const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
+  if (l2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
+  let t = ((p.x - a.x) * (b.x - a.x) + (p.y - a.y) * (b.y - a.y)) / l2;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
 }
 
 export function Whiteboard({ documentId }: { documentId: string }) {
   const { doc } = useWorkspace();
-  const [shapes, setShapes] = useState<Shape[]>([]);
-  const [activeTool, setActiveTool] = useState<'pen' | 'note' | 'eraser'>('pen');
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const [activeTool, setActiveTool] = useState<'pen' | 'eraser'>('pen');
   const [activeColor, setActiveColor] = useState<string>('#10B981');
   const [strokeWidth, setStrokeWidth] = useState<number>(4);
+  const [strokeCount, setStrokeCount] = useState<number>(0);
 
-  // In-progress stroke
-  const [currentStroke, setCurrentStroke] = useState<Point[] | null>(null);
+  const yStrokesRef = useRef<Y.Array<Stroke> | null>(null);
+  const strokesRef = useRef<Stroke[]>([]);
+  const currentStrokeRef = useRef<Stroke | null>(null);
   const isDrawing = useRef<boolean>(false);
-  const svgRef = useRef<SVGSVGElement | null>(null);
-  const yShapesRef = useRef<Y.Array<Shape> | null>(null);
 
-  // Dragging sticky notes
-  const [draggingNote, setDraggingNote] = useState<{
-    id: string;
-    offsetX: number;
-    offsetY: number;
-    currentX: number;
-    currentY: number;
-  } | null>(null);
+  // Redraw entire canvas with high DPI scaling
+  const redraw = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-  // Initialize and observe Y.Array
+    const dpr = window.devicePixelRatio || 1;
+    const width = canvas.width / dpr;
+    const height = canvas.height / dpr;
+
+    ctx.clearRect(0, 0, width, height);
+
+    const renderStroke = (stroke: Stroke) => {
+      if (stroke.points.length === 0) return;
+
+      ctx.beginPath();
+      ctx.strokeStyle = stroke.color;
+      ctx.lineWidth = stroke.width;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      if (stroke.points.length === 1) {
+        ctx.arc(stroke.points[0].x, stroke.points[0].y, stroke.width / 2, 0, Math.PI * 2);
+        ctx.fillStyle = stroke.color;
+        ctx.fill();
+        return;
+      }
+
+      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
+      for (let i = 1; i < stroke.points.length; i++) {
+        const prev = stroke.points[i - 1];
+        const curr = stroke.points[i];
+        const midX = (prev.x + curr.x) / 2;
+        const midY = (prev.y + curr.y) / 2;
+        ctx.quadraticCurveTo(prev.x, prev.y, midX, midY);
+      }
+      const last = stroke.points[stroke.points.length - 1];
+      ctx.lineTo(last.x, last.y);
+      ctx.stroke();
+    };
+
+    strokesRef.current.forEach(renderStroke);
+    if (currentStrokeRef.current) {
+      renderStroke(currentStrokeRef.current);
+    }
+  }, []);
+
+  // Handle Canvas Resizing with Device Pixel Ratio
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const handleResize = () => {
+      const dpr = window.devicePixelRatio || 1;
+      const rect = container.getBoundingClientRect();
+
+      canvas.width = rect.width * dpr;
+      canvas.height = rect.height * dpr;
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        ctx.scale(dpr, dpr);
+      }
+      redraw();
+    };
+
+    handleResize();
+    const observer = new ResizeObserver(handleResize);
+    observer.observe(container);
+
+    return () => observer.disconnect();
+  }, [redraw]);
+
+  // Bind to shared Y.Array
   useEffect(() => {
     if (!doc) return;
 
-    const yShapes = doc.getArray<Shape>(`kinetix-shapes-${documentId}`);
-    yShapesRef.current = yShapes;
+    const yStrokes = doc.getArray<Stroke>(`kinetix-strokes-${documentId}`);
+    yStrokesRef.current = yStrokes;
 
-    // Load initial shapes from CRDT
-    setShapes(yShapes.toArray());
+    const initial = yStrokes.toArray();
+    strokesRef.current = initial;
+    setStrokeCount(initial.length);
+    redraw();
 
     const observer = () => {
-      setShapes(yShapes.toArray());
+      const updated = yStrokes.toArray();
+      strokesRef.current = updated;
+      setStrokeCount(updated.length);
+      redraw();
     };
 
-    yShapes.observe(observer);
+    yStrokes.observe(observer);
 
     return () => {
-      yShapes.unobserve(observer);
+      yStrokes.unobserve(observer);
     };
-  }, [doc, documentId]);
+  }, [doc, documentId, redraw]);
 
-  // Compute coordinates relative to SVG
-  const getCoordinates = (e: React.PointerEvent<SVGSVGElement>): Point => {
-    if (!svgRef.current) return { x: 0, y: 0 };
-    const rect = svgRef.current.getBoundingClientRect();
+  const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
     return {
-      x: Math.round(e.clientX - rect.left),
-      y: Math.round(e.clientY - rect.top),
+      x: e.clientX - rect.left,
+      y: e.clientY - rect.top,
     };
   };
 
-  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (e.target !== svgRef.current && (e.target as HTMLElement).tagName !== 'svg') {
-      // If clicking inside a sticky note textarea, don't draw
-      return;
-    }
-
-    const point = getCoordinates(e);
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const point = getCanvasPoint(e);
 
     if (activeTool === 'pen') {
       isDrawing.current = true;
-      setCurrentStroke([point]);
-      (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    } else if (activeTool === 'note') {
-      // Create sticky note at click location
-      const newNote: NoteShape = {
-        id: `note-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        type: 'note',
-        x: Math.max(10, point.x - 90),
-        y: Math.max(10, point.y - 60),
-        text: '',
-        color: activeColor,
-      };
-
-      if (yShapesRef.current && doc) {
-        doc.transact(() => {
-          yShapesRef.current!.push([newNote]);
-        });
-      }
-      setActiveTool('pen');
-    }
-  };
-
-  const handlePointerMove = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (activeTool === 'pen' && isDrawing.current) {
-      const point = getCoordinates(e);
-      setCurrentStroke((prev) => (prev ? [...prev, point] : [point]));
-    } else if (draggingNote && svgRef.current) {
-      const rect = svgRef.current.getBoundingClientRect();
-      setDraggingNote((prev) =>
-        prev
-          ? {
-              ...prev,
-              currentX: Math.max(10, Math.round(e.clientX - rect.left - prev.offsetX)),
-              currentY: Math.max(10, Math.round(e.clientY - rect.top - prev.offsetY)),
-            }
-          : null
-      );
-    }
-  };
-
-  const handlePointerUp = (e: React.PointerEvent<SVGSVGElement>) => {
-    if (activeTool === 'pen' && isDrawing.current && currentStroke && currentStroke.length > 0) {
-      isDrawing.current = false;
-      const newStroke: StrokeShape = {
+      currentStrokeRef.current = {
         id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        type: 'stroke',
-        points: currentStroke,
+        points: [point],
         color: activeColor,
         width: strokeWidth,
       };
+      (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      redraw();
+    } else if (activeTool === 'eraser') {
+      eraseStrokeAt(point);
+    }
+  };
 
-      if (yShapesRef.current && doc) {
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const point = getCanvasPoint(e);
+
+    if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
+      currentStrokeRef.current.points.push(point);
+      redraw();
+    } else if (activeTool === 'eraser' && (e.buttons === 1 || e.pressure > 0)) {
+      eraseStrokeAt(point);
+    }
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
+      isDrawing.current = false;
+      const strokeToSave = currentStrokeRef.current;
+      currentStrokeRef.current = null;
+
+      if (strokeToSave.points.length > 0 && yStrokesRef.current && doc) {
         doc.transact(() => {
-          yShapesRef.current!.push([newStroke]);
+          yStrokesRef.current!.push([strokeToSave]);
         });
       }
-      setCurrentStroke(null);
       try {
         (e.target as HTMLElement).releasePointerCapture(e.pointerId);
       } catch {
         // ignore
       }
+      redraw();
     }
+  };
 
-    // Commit dragged sticky note position
-    if (draggingNote && yShapesRef.current && doc) {
-      doc.transact(() => {
-        const yShapes = yShapesRef.current!;
-        const arr = yShapes.toArray();
-        const idx = arr.findIndex((s) => s.id === draggingNote.id);
-        if (idx !== -1 && arr[idx].type === 'note') {
-          const note = arr[idx] as NoteShape;
-          const updated: NoteShape = {
-            ...note,
-            x: draggingNote.currentX,
-            y: draggingNote.currentY,
-          };
-          yShapes.delete(idx, 1);
-          yShapes.insert(idx, [updated]);
+  // Erase stroke touched by eraser point
+  const eraseStrokeAt = (point: Point) => {
+    if (!yStrokesRef.current || !doc) return;
+    const threshold = 15;
+    const currentList = strokesRef.current;
+
+    for (let sIdx = currentList.length - 1; sIdx >= 0; sIdx--) {
+      const stroke = currentList[sIdx];
+      for (let pIdx = 1; pIdx < stroke.points.length; pIdx++) {
+        const dist = distanceToSegment(point, stroke.points[pIdx - 1], stroke.points[pIdx]);
+        if (dist <= threshold + stroke.width / 2) {
+          doc.transact(() => {
+            yStrokesRef.current!.delete(sIdx, 1);
+          });
+          return;
         }
-      });
-      setDraggingNote(null);
+      }
     }
   };
 
-  const deleteShape = (id: string) => {
-    if (!yShapesRef.current || !doc) return;
+  const handleUndo = () => {
+    if (!yStrokesRef.current || !doc) return;
     doc.transact(() => {
-      const yShapes = yShapesRef.current!;
-      const arr = yShapes.toArray();
-      const idx = arr.findIndex((s) => s.id === id);
-      if (idx !== -1) {
-        yShapes.delete(idx, 1);
+      const yStrokes = yStrokesRef.current!;
+      if (yStrokes.length > 0) {
+        yStrokes.delete(yStrokes.length - 1, 1);
       }
     });
   };
 
-  const updateNoteText = (id: string, text: string) => {
-    if (!yShapesRef.current || !doc) return;
+  const handleClear = () => {
+    if (!yStrokesRef.current || !doc) return;
     doc.transact(() => {
-      const yShapes = yShapesRef.current!;
-      const arr = yShapes.toArray();
-      const idx = arr.findIndex((s) => s.id === id);
-      if (idx !== -1 && arr[idx].type === 'note') {
-        const note = arr[idx] as NoteShape;
-        const updated = { ...note, text };
-        yShapes.delete(idx, 1);
-        yShapes.insert(idx, [updated]);
-      }
-    });
-  };
-
-  const undoLastShape = () => {
-    if (!yShapesRef.current || !doc) return;
-    doc.transact(() => {
-      const yShapes = yShapesRef.current!;
-      if (yShapes.length > 0) {
-        yShapes.delete(yShapes.length - 1, 1);
-      }
-    });
-  };
-
-  const clearCanvas = () => {
-    if (!yShapesRef.current || !doc) return;
-    doc.transact(() => {
-      const yShapes = yShapesRef.current!;
-      if (yShapes.length > 0) {
-        yShapes.delete(0, yShapes.length);
+      const yStrokes = yStrokesRef.current!;
+      if (yStrokes.length > 0) {
+        yStrokes.delete(0, yStrokes.length);
       }
     });
   };
 
   return (
-    <div className="flex flex-col w-full h-full relative select-none">
-      {/* Floating Canvas Toolbar */}
+    <div ref={containerRef} className="relative flex flex-col w-full h-full min-h-[70vh] select-none">
+      {/* Floating Whiteboard Toolbar */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl">
-        {/* Tool selectors */}
+        {/* Tool Mode: Pen vs Eraser */}
         <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80">
           <button
             onClick={() => setActiveTool('pen')}
@@ -284,24 +274,13 @@ export function Whiteboard({ documentId }: { documentId: string }) {
             <Pencil className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setActiveTool('note')}
-            className={`p-2 rounded-lg transition-colors ${
-              activeTool === 'note'
-                ? 'bg-zinc-800 text-amber-400 shadow-sm'
-                : 'text-zinc-400 hover:text-zinc-200'
-            }`}
-            title="Sticky Note (Click on canvas to place)"
-          >
-            <StickyNote className="w-4 h-4" />
-          </button>
-          <button
             onClick={() => setActiveTool('eraser')}
             className={`p-2 rounded-lg transition-colors ${
               activeTool === 'eraser'
                 ? 'bg-zinc-800 text-rose-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
-            title="Eraser (Click any shape or note to delete)"
+            title="Eraser (Erase Strokes)"
           >
             <Eraser className="w-4 h-4" />
           </button>
@@ -311,12 +290,17 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         {/* Color Palette */}
         <div className="flex items-center gap-1.5 px-1">
-          {COLORS.map((c) => (
+          {PALETTE.map((c) => (
             <button
               key={c.value}
-              onClick={() => setActiveColor(c.value)}
+              onClick={() => {
+                setActiveColor(c.value);
+                setActiveTool('pen');
+              }}
               className={`w-5 h-5 rounded-full transition-transform ${
-                activeColor === c.value ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900' : 'hover:scale-110'
+                activeColor === c.value && activeTool === 'pen'
+                  ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900'
+                  : 'hover:scale-110 opacity-80 hover:opacity-100'
               }`}
               style={{ backgroundColor: c.value }}
               title={c.label}
@@ -346,150 +330,43 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </div>
         )}
 
-        {/* Canvas Actions */}
+        {/* Actions: Undo / Clear */}
         <div className="flex items-center gap-1">
           <button
-            onClick={undoLastShape}
-            disabled={shapes.length === 0}
+            onClick={handleUndo}
+            disabled={strokeCount === 0}
             className="p-2 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
-            title="Undo"
+            title="Undo Last Stroke"
           >
             <Undo2 className="w-4 h-4" />
           </button>
           <button
-            onClick={clearCanvas}
-            disabled={shapes.length === 0}
+            onClick={handleClear}
+            disabled={strokeCount === 0}
             className="p-2 text-zinc-400 hover:text-rose-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
-            title="Clear Whiteboard"
+            title="Clear Board"
           >
             <Trash2 className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* SVG Canvas with Dot-Grid Background */}
-      <svg
-        ref={svgRef}
+      {/* HTML5 Canvas with Dot-Grid Background */}
+      <canvas
+        ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
         className={`w-full h-full min-h-[70vh] bg-zinc-950 rounded-2xl border border-zinc-800/80 shadow-inner ${
-          activeTool === 'pen'
-            ? 'cursor-crosshair'
-            : activeTool === 'note'
-            ? 'cursor-copy'
-            : 'cursor-pointer'
+          activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-cell'
         }`}
         style={{
           backgroundImage: 'radial-gradient(circle, #27272a 1px, transparent 1px)',
           backgroundSize: '24px 24px',
           touchAction: 'none',
         }}
-      >
-        {/* Rendered Strokes */}
-        {shapes
-          .filter((s): s is StrokeShape => s.type === 'stroke')
-          .map((stroke) => (
-            <path
-              key={stroke.id}
-              d={pointsToSvgPath(stroke.points)}
-              stroke={stroke.color}
-              strokeWidth={stroke.width}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              fill="none"
-              onClick={() => {
-                if (activeTool === 'eraser') {
-                  deleteShape(stroke.id);
-                }
-              }}
-              className={activeTool === 'eraser' ? 'hover:opacity-40 cursor-pointer' : ''}
-            />
-          ))}
-
-        {/* In-progress stroke */}
-        {currentStroke && (
-          <path
-            d={pointsToSvgPath(currentStroke)}
-            stroke={activeColor}
-            strokeWidth={strokeWidth}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            fill="none"
-          />
-        )}
-
-        {/* Rendered Sticky Notes */}
-        {shapes
-          .filter((s): s is NoteShape => s.type === 'note')
-          .map((note) => {
-            const isBeingDragged = draggingNote?.id === note.id;
-            const posX = isBeingDragged ? draggingNote.currentX : note.x;
-            const posY = isBeingDragged ? draggingNote.currentY : note.y;
-
-            return (
-              <foreignObject
-                key={note.id}
-                x={posX}
-                y={posY}
-                width={190}
-                height={150}
-                className="overflow-visible"
-              >
-                <div
-                  className="w-[190px] h-[150px] rounded-xl shadow-xl flex flex-col p-3 border border-zinc-700/60 backdrop-blur-sm transition-shadow group relative"
-                  style={{
-                    backgroundColor: `${note.color}15`,
-                    borderColor: `${note.color}60`,
-                    boxShadow: `0 8px 24px -4px ${note.color}25`,
-                  }}
-                >
-                  {/* Drag Handle & Delete Header */}
-                  <div
-                    onPointerDown={(e) => {
-                      if (activeTool === 'eraser') {
-                        deleteShape(note.id);
-                        return;
-                      }
-                      if (svgRef.current) {
-                        const rect = svgRef.current.getBoundingClientRect();
-                        setDraggingNote({
-                          id: note.id,
-                          offsetX: e.clientX - rect.left - posX,
-                          offsetY: e.clientY - rect.top - posY,
-                          currentX: posX,
-                          currentY: posY,
-                        });
-                      }
-                    }}
-                    className="flex items-center justify-between pb-1.5 cursor-grab active:cursor-grabbing border-b border-zinc-700/40"
-                  >
-                    <span
-                      className="w-2.5 h-2.5 rounded-full"
-                      style={{ backgroundColor: note.color }}
-                    />
-                    <button
-                      onClick={() => deleteShape(note.id)}
-                      className="text-zinc-400 hover:text-rose-400 opacity-60 group-hover:opacity-100 transition-opacity"
-                      title="Delete note"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-
-                  {/* Note Body */}
-                  <textarea
-                    defaultValue={note.text}
-                    onBlur={(e) => updateNoteText(note.id, e.target.value)}
-                    placeholder="Type a quick note..."
-                    className="w-full flex-1 mt-2 bg-transparent resize-none focus:outline-none text-xs text-zinc-100 placeholder:text-zinc-500 font-sans leading-relaxed"
-                  />
-                </div>
-              </foreignObject>
-            );
-          })}
-      </svg>
+      />
     </div>
   );
 }
-

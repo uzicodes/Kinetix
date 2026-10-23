@@ -171,7 +171,7 @@ export function Editor({ documentId }: { documentId: string }) {
 
           <div className="h-4 w-px bg-zinc-800 hidden sm:block" />
 
-          {/* Primary Workspace Mode Switcher */}
+          {/* Primary Workspace Mode Switcher: [Note Editor | Whiteboard | Split View] */}
           <div className="flex items-center p-0.5 bg-zinc-900 border border-zinc-800 rounded-lg text-xs font-medium text-zinc-400">
             <button
               onClick={() => setWorkspaceMode('doc')}
@@ -180,22 +180,10 @@ export function Editor({ documentId }: { documentId: string }) {
                   ? 'bg-zinc-800 text-zinc-100 shadow-sm'
                   : 'hover:text-zinc-200'
               }`}
-              title="Document Editor Mode"
+              title="Note Editor Mode"
             >
               <FileText className="w-3.5 h-3.5" />
-              <span>Document</span>
-            </button>
-            <button
-              onClick={() => setWorkspaceMode('split')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
-                workspaceMode === 'split'
-                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
-                  : 'hover:text-zinc-200'
-              }`}
-              title="Split Mode (Document & Whiteboard)"
-            >
-              <Layout className="w-3.5 h-3.5" />
-              <span>Split View</span>
+              <span>Note Editor</span>
             </button>
             <button
               onClick={() => setWorkspaceMode('whiteboard')}
@@ -208,6 +196,18 @@ export function Editor({ documentId }: { documentId: string }) {
             >
               <Palette className="w-3.5 h-3.5" />
               <span>Whiteboard</span>
+            </button>
+            <button
+              onClick={() => setWorkspaceMode('split')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md transition-colors ${
+                workspaceMode === 'split'
+                  ? 'bg-zinc-800 text-zinc-100 shadow-sm'
+                  : 'hover:text-zinc-200'
+              }`}
+              title="Split Mode (Note Editor & Whiteboard)"
+            >
+              <Layout className="w-3.5 h-3.5" />
+              <span>Split View</span>
             </button>
           </div>
 
