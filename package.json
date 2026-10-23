@@ -3,8 +3,8 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint"
   },
@@ -26,6 +26,7 @@
     "yjs": "^13.6.33"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
     "@tailwindcss/turbopack": "^4",
     "@types/fast-diff": "^1.1.0",
     "@types/node": "^20",
@@ -33,6 +34,7 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.4.1",
+    "postcss": "^8.5.31",
     "tailwindcss": "^4",
     "typescript": "^5"
   }
