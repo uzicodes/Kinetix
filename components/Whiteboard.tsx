@@ -26,7 +26,7 @@ export interface BoardImage {
   height: number;
 }
 
-type ToolMode = 'select' | 'pen' | 'eraser';
+export type ToolMode = 'draw' | 'select' | 'erase';
 
 const PALETTE = [
   { label: 'Emerald', value: '#10B981' },
@@ -39,6 +39,7 @@ const PALETTE = [
 
 const THICKNESS_PRESETS = [2, 4, 8, 14];
 
+// Distance between a point and a line segment
 function distanceToSegment(p: Point, a: Point, b: Point): number {
   const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
   if (l2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
@@ -47,15 +48,61 @@ function distanceToSegment(p: Point, a: Point, b: Point): number {
   return Math.hypot(p.x - (a.x + t * (b.x - a.x)), p.y - (a.y + t * (b.y - a.y)));
 }
 
+// Optimized Line-to-Circle Hit Detection with Bounding Box Pre-Check
+function strokeIntersectsCircle(stroke: Stroke, center: Point, radius: number): boolean {
+  if (stroke.points.length === 0) return false;
+
+  const effectiveRadius = radius + stroke.width / 2;
+
+  // 1. Quick Bounding Box Pre-Check for 60fps performance
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+
+  for (let i = 0; i < stroke.points.length; i++) {
+    const pt = stroke.points[i];
+    if (pt.x < minX) minX = pt.x;
+    if (pt.x > maxX) maxX = pt.x;
+    if (pt.y < minY) minY = pt.y;
+    if (pt.y > maxY) maxY = pt.y;
+  }
+
+  if (
+    center.x + effectiveRadius < minX ||
+    center.x - effectiveRadius > maxX ||
+    center.y + effectiveRadius < minY ||
+    center.y - effectiveRadius > maxY
+  ) {
+    return false;
+  }
+
+  // 2. Single-point stroke check
+  if (stroke.points.length === 1) {
+    return Math.hypot(center.x - stroke.points[0].x, center.y - stroke.points[0].y) <= effectiveRadius;
+  }
+
+  // 3. Exact Segment-to-Circle distance check
+  for (let i = 1; i < stroke.points.length; i++) {
+    if (distanceToSegment(center, stroke.points[i - 1], stroke.points[i]) <= effectiveRadius) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 export function Whiteboard({ documentId }: { documentId: string }) {
   const { doc } = useWorkspace();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [activeTool, setActiveTool] = useState<ToolMode>('pen');
+  // 1. Tool Modes: 'draw' | 'select' | 'erase'
+  const [toolMode, setToolMode] = useState<ToolMode>('draw');
   const [activeColor, setActiveColor] = useState<string>('#10B981');
   const [strokeWidth, setStrokeWidth] = useState<number>(4);
+  const [eraserRadius, setEraserRadius] = useState<number>(20);
   const [strokeCount, setStrokeCount] = useState<number>(0);
   const [imageCount, setImageCount] = useState<number>(0);
 
@@ -70,6 +117,9 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     currentY: number;
   } | null>(null);
 
+  // 2. Visual Eraser Cursor position
+  const eraserPosRef = useRef<Point | null>(null);
+
   const isCustomColor = !PALETTE.some((c) => c.value.toLowerCase() === activeColor.toLowerCase());
 
   const yStrokesRef = useRef<Y.Array<Stroke> | null>(null);
@@ -77,7 +127,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   const strokesRef = useRef<Stroke[]>([]);
   const imagesRef = useRef<BoardImage[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
-  const isDrawing = useRef<boolean>(false);
+  const isPointerDown = useRef<boolean>(false);
 
   // In-memory image cache to eliminate re-rendering flicker
   const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -95,7 +145,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
     ctx.clearRect(0, 0, width, height);
 
-    // 1. Render uploaded images FIRST (so strokes can be drawn on top of them)
+    // 1. Render uploaded images FIRST (so strokes can be drawn over them)
     imagesRef.current.forEach((item) => {
       let cachedImg = imageCacheRef.current.get(item.id);
       if (!cachedImg) {
@@ -111,16 +161,15 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         // Visual feedback: selection / hover bounding box in 'select' mode
         const isSelected = item.id === selectedImageId;
-        const isHovered = item.id === hoveredImageId && activeTool === 'select';
+        const isHovered = item.id === hoveredImageId && toolMode === 'select';
 
         if (isSelected || isHovered) {
           ctx.save();
-          ctx.strokeStyle = isSelected ? '#38bdf8' : '#38bdf880'; // sky-400
+          ctx.strokeStyle = isSelected ? '#38bdf8' : '#38bdf880';
           ctx.lineWidth = 2;
           ctx.setLineDash(isSelected ? [6, 4] : [4, 4]);
           ctx.strokeRect(item.x - 2, item.y - 2, item.width + 4, item.height + 4);
 
-          // Corner handles for active selection
           if (isSelected) {
             ctx.fillStyle = '#38bdf8';
             ctx.setLineDash([]);
@@ -174,7 +223,21 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     if (currentStrokeRef.current) {
       renderStroke(currentStrokeRef.current);
     }
-  }, [selectedImageId, hoveredImageId, activeTool]);
+
+    // 3. Render Visual Eraser Brush (hollow translucent circle) in 'erase' mode
+    if (toolMode === 'erase' && eraserPosRef.current) {
+      const { x, y } = eraserPosRef.current;
+      ctx.save();
+      ctx.beginPath();
+      ctx.arc(x, y, eraserRadius, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(244, 63, 94, 0.12)'; // faint rose fill
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(244, 63, 94, 0.75)'; // crisp rose outline
+      ctx.stroke();
+      ctx.restore();
+    }
+  }, [selectedImageId, hoveredImageId, toolMode, eraserRadius]);
 
   // Handle Canvas Resizing with Device Pixel Ratio
   useEffect(() => {
@@ -222,7 +285,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     };
     yStrokes.observe(strokesObserver);
 
-    // --- Images CRDT Map (Y.Map for precise independent coordinate mutations) ---
+    // --- Images CRDT Map ---
     const yImages = doc.getMap<BoardImage>(`kinetix-images-${documentId}`);
     yImagesRef.current = yImages;
 
@@ -286,11 +349,34 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     };
   };
 
+  // 4. Spatial Stroke Eraser: deletes entire paths that intersect with eraser circle
+  const eraseStrokesAt = (point: Point) => {
+    if (!yStrokesRef.current || !doc) return;
+    const currentList = strokesRef.current;
+    const indicesToDelete: number[] = [];
+
+    // Check all strokes from top to bottom
+    for (let i = currentList.length - 1; i >= 0; i--) {
+      if (strokeIntersectsCircle(currentList[i], point, eraserRadius)) {
+        indicesToDelete.push(i);
+      }
+    }
+
+    if (indicesToDelete.length > 0) {
+      doc.transact(() => {
+        // Delete descending so indices remain valid
+        for (const idx of indicesToDelete) {
+          yStrokesRef.current!.delete(idx, 1);
+        }
+      });
+    }
+  };
+
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const point = getCanvasPoint(e);
+    isPointerDown.current = true;
 
-    if (activeTool === 'select') {
-      // Hit detection: iterate from topmost to bottommost image
+    if (toolMode === 'select') {
       const images = imagesRef.current;
       let hitImage: BoardImage | null = null;
       for (let i = images.length - 1; i >= 0; i--) {
@@ -321,8 +407,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         dragInfoRef.current = null;
       }
       redraw();
-    } else if (activeTool === 'pen') {
-      isDrawing.current = true;
+    } else if (toolMode === 'draw') {
       currentStrokeRef.current = {
         id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
         points: [point],
@@ -331,17 +416,18 @@ export function Whiteboard({ documentId }: { documentId: string }) {
       };
       (e.target as HTMLElement).setPointerCapture(e.pointerId);
       redraw();
-    } else if (activeTool === 'eraser') {
-      eraseStrokeAt(point);
+    } else if (toolMode === 'erase') {
+      eraserPosRef.current = point;
+      eraseStrokesAt(point);
+      redraw();
     }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const point = getCanvasPoint(e);
 
-    if (activeTool === 'select') {
+    if (toolMode === 'select') {
       if (dragInfoRef.current) {
-        // Dragging: update coordinates locally at 60fps without flooding WebSocket
         const newX = Math.round(point.x - dragInfoRef.current.offsetX);
         const newY = Math.round(point.y - dragInfoRef.current.offsetY);
         dragInfoRef.current.currentX = newX;
@@ -358,7 +444,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         }
         redraw();
       } else {
-        // Hover hit detection to update cursor style
         const images = imagesRef.current;
         let hit = false;
         for (let i = images.length - 1; i >= 0; i--) {
@@ -382,16 +467,22 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           redraw();
         }
       }
-    } else if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
+    } else if (toolMode === 'draw' && isPointerDown.current && currentStrokeRef.current) {
       currentStrokeRef.current.points.push(point);
       redraw();
-    } else if (activeTool === 'eraser' && (e.buttons === 1 || e.pressure > 0)) {
-      eraseStrokeAt(point);
+    } else if (toolMode === 'erase') {
+      eraserPosRef.current = point;
+      if (isPointerDown.current || e.buttons === 1 || e.pressure > 0) {
+        eraseStrokesAt(point);
+      }
+      redraw();
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (activeTool === 'select' && dragInfoRef.current) {
+    isPointerDown.current = false;
+
+    if (toolMode === 'select' && dragInfoRef.current) {
       const { id, currentX, currentY } = dragInfoRef.current;
       dragInfoRef.current = null;
 
@@ -401,7 +492,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         // ignore
       }
 
-      // Commit final coordinates to Y.Map and broadcast to peers
       if (doc && yImagesRef.current) {
         const existing = yImagesRef.current.get(id);
         if (existing && (existing.x !== currentX || existing.y !== currentY)) {
@@ -415,8 +505,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         }
       }
       redraw();
-    } else if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
-      isDrawing.current = false;
+    } else if (toolMode === 'draw' && currentStrokeRef.current) {
       const strokeToSave = currentStrokeRef.current;
       currentStrokeRef.current = null;
 
@@ -434,23 +523,11 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     }
   };
 
-  // Erase stroke touched by eraser point
-  const eraseStrokeAt = (point: Point) => {
-    if (!yStrokesRef.current || !doc) return;
-    const threshold = 15;
-    const currentList = strokesRef.current;
-
-    for (let sIdx = currentList.length - 1; sIdx >= 0; sIdx--) {
-      const stroke = currentList[sIdx];
-      for (let pIdx = 1; pIdx < stroke.points.length; pIdx++) {
-        const dist = distanceToSegment(point, stroke.points[pIdx - 1], stroke.points[pIdx]);
-        if (dist <= threshold + stroke.width / 2) {
-          doc.transact(() => {
-            yStrokesRef.current!.delete(sIdx, 1);
-          });
-          return;
-        }
-      }
+  const handlePointerLeave = () => {
+    isPointerDown.current = false;
+    if (toolMode === 'erase') {
+      eraserPosRef.current = null;
+      redraw();
     }
   };
 
@@ -468,7 +545,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
       const img = new Image();
       img.onload = () => {
-        // Downscale offscreen to avoid WebSocket / CRDT payload bloating
         const maxDim = 800;
         let targetWidth = img.width;
         let targetHeight = img.height;
@@ -495,7 +571,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           0.85
         );
 
-        // Display size on canvas (max width 360px preserving ratio)
         const displayMaxWidth = 360;
         let displayWidth = targetWidth;
         let displayHeight = targetHeight;
@@ -520,17 +595,14 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           height: displayHeight,
         };
 
-        // Cache image object immediately
         imageCacheRef.current.set(boardImage.id, img);
 
-        // Commit to Y.Map
         doc.transact(() => {
           yImagesRef.current!.set(boardImage.id, boardImage);
         });
 
-        // Auto-select and switch to Select tool so user can reposition immediately
         setSelectedImageId(boardImage.id);
-        setActiveTool('select');
+        setToolMode('select');
         redraw();
       };
       img.src = rawDataUrl;
@@ -575,6 +647,11 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
+    // Temporarily hide eraser circle for clean image export
+    const prevEraserPos = eraserPosRef.current;
+    eraserPosRef.current = null;
+    redraw();
+
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = canvas.width;
     exportCanvas.height = canvas.height;
@@ -596,7 +673,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
       }
     }
 
-    // Render whiteboard composite (images + strokes) on top
+    // Render composite (images + strokes) on top
     ctx.drawImage(canvas, 0, 0);
 
     const dataUrl = exportCanvas.toDataURL('image/png');
@@ -606,19 +683,23 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+
+    // Restore eraser position
+    eraserPosRef.current = prevEraserPos;
+    redraw();
   };
 
   const hasContent = strokeCount > 0 || imageCount > 0;
 
-  // Dynamic canvas cursor
+  // 2. Dynamic canvas cursor: hide native cursor when using custom visual circular eraser
   const getCanvasCursor = () => {
-    if (activeTool === 'select') {
+    if (toolMode === 'erase') return 'cursor-none';
+    if (toolMode === 'select') {
       if (dragInfoRef.current) return 'cursor-grabbing';
       if (hoveredImageId) return 'cursor-grab';
       return 'cursor-default';
     }
-    if (activeTool === 'pen') return 'cursor-crosshair';
-    if (activeTool === 'eraser') return 'cursor-cell';
+    if (toolMode === 'draw') return 'cursor-crosshair';
     return 'cursor-default';
   };
 
@@ -635,15 +716,16 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
       {/* Floating Whiteboard Toolbar */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-nowrap items-center gap-1.5 sm:gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl max-w-[96vw] overflow-x-auto">
-        {/* Tool Mode: Select vs Pen vs Eraser */}
+        {/* Tool Mode: Select vs Draw vs Erase */}
         <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80 shrink-0">
           <button
             onClick={() => {
-              setActiveTool('select');
+              setToolMode('select');
+              eraserPosRef.current = null;
               redraw();
             }}
             className={`p-1.5 rounded-lg transition-colors ${
-              activeTool === 'select'
+              toolMode === 'select'
                 ? 'bg-zinc-800 text-sky-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
@@ -653,12 +735,13 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </button>
           <button
             onClick={() => {
-              setActiveTool('pen');
+              setToolMode('draw');
               setSelectedImageId(null);
+              eraserPosRef.current = null;
               redraw();
             }}
             className={`p-1.5 rounded-lg transition-colors ${
-              activeTool === 'pen'
+              toolMode === 'draw'
                 ? 'bg-zinc-800 text-emerald-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
@@ -668,16 +751,16 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </button>
           <button
             onClick={() => {
-              setActiveTool('eraser');
+              setToolMode('erase');
               setSelectedImageId(null);
               redraw();
             }}
             className={`p-1.5 rounded-lg transition-colors ${
-              activeTool === 'eraser'
+              toolMode === 'erase'
                 ? 'bg-zinc-800 text-rose-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
             }`}
-            title="Eraser (Erase Strokes)"
+            title="Stroke Eraser (Spatial Brush)"
           >
             <Eraser className="w-4 h-4" />
           </button>
@@ -685,17 +768,17 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
-        {/* Color Palette (Active during Pen mode) */}
+        {/* Color Palette (Active during Draw mode) */}
         <div className="flex items-center gap-1 px-0.5 shrink-0">
           {PALETTE.map((c) => (
             <button
               key={c.value}
               onClick={() => {
                 setActiveColor(c.value);
-                setActiveTool('pen');
+                setToolMode('draw');
               }}
               className={`w-4 h-4 rounded-full transition-transform ${
-                activeColor.toLowerCase() === c.value.toLowerCase() && activeTool === 'pen'
+                activeColor.toLowerCase() === c.value.toLowerCase() && toolMode === 'draw'
                   ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900'
                   : 'hover:scale-110 opacity-80 hover:opacity-100'
               }`}
@@ -707,7 +790,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           {/* Custom Color Selection Widget */}
           <label
             className={`relative w-4 h-4 rounded-full flex items-center justify-center cursor-pointer transition-transform shrink-0 overflow-hidden ${
-              isCustomColor && activeTool === 'pen'
+              isCustomColor && toolMode === 'draw'
                 ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900'
                 : 'hover:scale-110 opacity-80 hover:opacity-100'
             }`}
@@ -723,7 +806,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
               value={activeColor}
               onChange={(e) => {
                 setActiveColor(e.target.value);
-                setActiveTool('pen');
+                setToolMode('draw');
               }}
               className="absolute inset-0 opacity-0 cursor-pointer w-full h-full p-0 border-0"
             />
@@ -732,8 +815,8 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
-        {/* Thickness Toggle & Slider */}
-        {activeTool === 'pen' && (
+        {/* Dynamic Size Control: Pen Thickness vs Eraser Radius */}
+        {toolMode === 'draw' && (
           <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-1 rounded-xl border border-zinc-800/80 shrink-0">
             <div className="flex items-center gap-0.5">
               {THICKNESS_PRESETS.map((size) => (
@@ -778,6 +861,44 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </div>
         )}
 
+        {toolMode === 'erase' && (
+          <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-1 rounded-xl border border-zinc-800/80 shrink-0">
+            <div className="flex items-center gap-0.5">
+              {[12, 20, 32].map((r) => (
+                <button
+                  key={r}
+                  onClick={() => setEraserRadius(r)}
+                  className={`px-1.5 py-0.5 text-[10px] font-mono rounded transition-colors ${
+                    eraserRadius === r
+                      ? 'bg-zinc-800 text-rose-400 font-semibold ring-1 ring-zinc-700'
+                      : 'text-zinc-500 hover:text-zinc-300'
+                  }`}
+                  title={`Eraser radius: ${r}px`}
+                >
+                  {r * 2}p
+                </button>
+              ))}
+            </div>
+
+            <div className="h-4 w-px bg-zinc-800" />
+
+            <div className="flex items-center gap-1">
+              <input
+                type="range"
+                min="8"
+                max="48"
+                value={eraserRadius}
+                onChange={(e) => setEraserRadius(Number(e.target.value))}
+                className="w-14 sm:w-16 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-rose-500 hover:accent-rose-400"
+                title={`Eraser diameter: ${eraserRadius * 2}px`}
+              />
+              <span className="text-[10px] font-mono text-zinc-400 w-6 text-right">
+                {eraserRadius * 2}p
+              </span>
+            </div>
+          </div>
+        )}
+
         <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
         {/* Actions: Undo / Clear / Divider / Upload Image / Save (Download) */}
@@ -817,13 +938,14 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         </div>
       </div>
 
-      {/* HTML5 Canvas with Dynamic Cursor & Dot-Grid Background */}
+      {/* HTML5 Canvas with Dynamic Eraser Brush & Dot-Grid Background */}
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onPointerLeave={handlePointerLeave}
         className={`w-full h-full min-h-[70vh] bg-zinc-950 rounded-2xl border border-zinc-800/80 shadow-inner ${getCanvasCursor()}`}
         style={{
           backgroundImage: 'radial-gradient(circle, #27272a 1px, transparent 1px)',
