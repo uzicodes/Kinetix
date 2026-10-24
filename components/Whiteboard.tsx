@@ -26,11 +26,7 @@ const PALETTE = [
   { label: 'White', value: '#FFFFFF' },
 ];
 
-const STROKE_WIDTHS = [
-  { label: 'Fine', value: 2 },
-  { label: 'Medium', value: 4 },
-  { label: 'Bold', value: 8 },
-];
+const THICKNESS_PRESETS = [2, 4, 8, 14];
 
 // Distance between a point and a line segment
 function distanceToSegment(p: Point, a: Point, b: Point): number {
@@ -50,6 +46,8 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   const [activeColor, setActiveColor] = useState<string>('#10B981');
   const [strokeWidth, setStrokeWidth] = useState<number>(4);
   const [strokeCount, setStrokeCount] = useState<number>(0);
+
+  const isCustomColor = !PALETTE.some((c) => c.value.toLowerCase() === activeColor.toLowerCase());
 
   const yStrokesRef = useRef<Y.Array<Stroke> | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
@@ -300,12 +298,12 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   return (
     <div ref={containerRef} className="relative flex flex-col w-full h-full min-h-[70vh] select-none">
       {/* Floating Whiteboard Toolbar */}
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-wrap items-center gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-nowrap items-center gap-1.5 sm:gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl max-w-[96vw] overflow-x-auto">
         {/* Tool Mode: Pen vs Eraser */}
-        <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80">
+        <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80 shrink-0">
           <button
             onClick={() => setActiveTool('pen')}
-            className={`p-2 rounded-lg transition-colors ${
+            className={`p-1.5 rounded-lg transition-colors ${
               activeTool === 'pen'
                 ? 'bg-zinc-800 text-emerald-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
@@ -316,7 +314,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </button>
           <button
             onClick={() => setActiveTool('eraser')}
-            className={`p-2 rounded-lg transition-colors ${
+            className={`p-1.5 rounded-lg transition-colors ${
               activeTool === 'eraser'
                 ? 'bg-zinc-800 text-rose-400 shadow-sm'
                 : 'text-zinc-400 hover:text-zinc-200'
@@ -327,10 +325,10 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </button>
         </div>
 
-        <div className="h-5 w-px bg-zinc-800" />
+        <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
         {/* Color Palette */}
-        <div className="flex items-center gap-1.5 px-1">
+        <div className="flex items-center gap-1 px-0.5 shrink-0">
           {PALETTE.map((c) => (
             <button
               key={c.value}
@@ -338,8 +336,8 @@ export function Whiteboard({ documentId }: { documentId: string }) {
                 setActiveColor(c.value);
                 setActiveTool('pen');
               }}
-              className={`w-5 h-5 rounded-full transition-transform ${
-                activeColor === c.value && activeTool === 'pen'
+              className={`w-4 h-4 rounded-full transition-transform ${
+                activeColor.toLowerCase() === c.value.toLowerCase() && activeTool === 'pen'
                   ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900'
                   : 'hover:scale-110 opacity-80 hover:opacity-100'
               }`}
@@ -347,36 +345,91 @@ export function Whiteboard({ documentId }: { documentId: string }) {
               title={c.label}
             />
           ))}
+
+          {/* Custom Color Selection Widget */}
+          <label
+            className={`relative w-4 h-4 rounded-full flex items-center justify-center cursor-pointer transition-transform shrink-0 overflow-hidden ${
+              isCustomColor && activeTool === 'pen'
+                ? 'scale-125 ring-2 ring-zinc-400 ring-offset-2 ring-offset-zinc-900'
+                : 'hover:scale-110 opacity-80 hover:opacity-100'
+            }`}
+            style={{
+              background: isCustomColor
+                ? activeColor
+                : 'conic-gradient(from 90deg, #ff0000, #ff7f00, #ffff00, #00ff00, #00ffff, #0000ff, #8b00ff, #ff0000)',
+            }}
+            title={isCustomColor ? `Custom Color: ${activeColor}` : 'Custom Color Picker'}
+          >
+            <input
+              type="color"
+              value={activeColor}
+              onChange={(e) => {
+                setActiveColor(e.target.value);
+                setActiveTool('pen');
+              }}
+              className="absolute inset-0 opacity-0 cursor-pointer w-full h-full p-0 border-0"
+            />
+          </label>
         </div>
 
-        <div className="h-5 w-px bg-zinc-800" />
+        <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
-        {/* Stroke Width Selector */}
+        {/* Thickness Toggle & Slider */}
         {activeTool === 'pen' && (
-          <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80">
-            {STROKE_WIDTHS.map((w) => (
-              <button
-                key={w.value}
-                onClick={() => setStrokeWidth(w.value)}
-                className={`px-2 py-1 text-[11px] rounded font-medium transition-colors ${
-                  strokeWidth === w.value
-                    ? 'bg-zinc-800 text-zinc-100'
-                    : 'text-zinc-500 hover:text-zinc-300'
-                }`}
-                title={`${w.label} width`}
-              >
-                {w.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-1 rounded-xl border border-zinc-800/80 shrink-0">
+            {/* Visual preset toggles (dots of varying thickness) */}
+            <div className="flex items-center gap-0.5">
+              {THICKNESS_PRESETS.map((size) => (
+                <button
+                  key={size}
+                  onClick={() => setStrokeWidth(size)}
+                  className={`w-5 h-5 rounded-md flex items-center justify-center transition-colors ${
+                    strokeWidth === size
+                      ? 'bg-zinc-800 text-zinc-100 ring-1 ring-zinc-700 shadow-sm'
+                      : 'hover:bg-zinc-900 text-zinc-500'
+                  }`}
+                  title={`Thickness: ${size}px`}
+                >
+                  <span
+                    className="rounded-full transition-transform"
+                    style={{
+                      width: `${Math.min(12, Math.max(3, size))}px`,
+                      height: `${Math.min(12, Math.max(3, size))}px`,
+                      backgroundColor: strokeWidth === size ? activeColor : '#71717a',
+                    }}
+                  />
+                </button>
+              ))}
+            </div>
+
+            <div className="h-4 w-px bg-zinc-800" />
+
+            {/* Range slider for custom thickness */}
+            <div className="flex items-center gap-1">
+              <input
+                type="range"
+                min="1"
+                max="24"
+                value={strokeWidth}
+                onChange={(e) => setStrokeWidth(Number(e.target.value))}
+                className="w-14 sm:w-16 h-1.5 bg-zinc-800 rounded-lg appearance-none cursor-pointer accent-emerald-500 hover:accent-emerald-400"
+                title={`Brush thickness: ${strokeWidth}px`}
+              />
+              <span className="text-[10px] font-mono text-zinc-400 w-5 text-right">
+                {strokeWidth}p
+              </span>
+            </div>
           </div>
         )}
 
-        {/* Actions: Undo / Clear / Export PNG */}
-        <div className="flex items-center gap-1">
+        <div className="h-5 w-px bg-zinc-800 shrink-0" />
+
+        {/* Actions: Undo / Clear / Export PNG - strictly on same line */}
+        <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={handleUndo}
             disabled={strokeCount === 0}
-            className="p-2 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
+            className="p-1.5 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
             title="Undo Last Stroke"
           >
             <Undo2 className="w-4 h-4" />
@@ -384,16 +437,16 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           <button
             onClick={handleClear}
             disabled={strokeCount === 0}
-            className="p-2 text-zinc-400 hover:text-rose-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
+            className="p-1.5 text-zinc-400 hover:text-rose-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
             title="Clear Board"
           >
             <Trash2 className="w-4 h-4" />
           </button>
-          <div className="h-4 w-px bg-zinc-800 my-auto" />
+          <div className="h-4 w-px bg-zinc-800 my-auto mx-0.5" />
           <button
             onClick={handleExportPNG}
             disabled={strokeCount === 0}
-            className="px-2.5 py-1.5 text-zinc-400 hover:text-emerald-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg flex items-center gap-1 text-xs font-medium"
+            className="px-2 py-1 text-zinc-400 hover:text-emerald-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg flex items-center gap-1 text-xs font-medium"
             title="Export Whiteboard as PNG"
           >
             <ImageDown className="w-4 h-4" />
