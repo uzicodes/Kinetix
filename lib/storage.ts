@@ -21,6 +21,11 @@ export function getDocuments(): DocMeta[] {
   return JSON.parse(data);
 }
 
+export function getDocumentMeta(id: string): DocMeta | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return getDocuments().find((d) => d.id === id);
+}
+
 // Save or update a document in the index
 export function saveDocumentMeta(id: string, title: string) {
   if (typeof window === 'undefined') return;
@@ -35,6 +40,7 @@ export function saveDocumentMeta(id: string, title: string) {
   }
 
   localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
+  window.dispatchEvent(new CustomEvent('kinetix:documents-updated', { detail: { id, title } }));
 }
 
 // Delete a document from the index
@@ -42,6 +48,7 @@ export function deleteDocumentMeta(id: string): DocMeta[] {
   if (typeof window === 'undefined') return [];
   const docs = getDocuments().filter((d) => d.id !== id);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(docs));
+  window.dispatchEvent(new CustomEvent('kinetix:documents-updated', { detail: { id } }));
   return docs;
 }
 

@@ -2,13 +2,13 @@
 
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
-import { saveDocumentMeta } from '@/lib/storage';
+import { getDocumentMeta, saveDocumentMeta } from '@/lib/storage';
 import { applyTextDelta } from '@/lib/diff';
 import { MarkdownPreview } from '@/components/MarkdownPreview';
 import { Avatars } from '@/components/Avatars';
 import { ConnectionStatus } from '@/components/ConnectionStatus';
 import { Whiteboard } from '@/components/Whiteboard';
-import { FileText, PenTool, Columns, Eye, Download, Wifi, WifiOff } from 'lucide-react';
+import { FileText, PenTool, Columns, Eye, Download, Wifi, WifiOff, Pencil } from 'lucide-react';
 import * as Y from 'yjs';
 
 // Unique origin identifier for local CRDT transactions to prevent echo loops
@@ -21,13 +21,16 @@ export function Editor({ documentId }: { documentId: string }) {
   const [content, setContent] = useState<string>('');
   const [previewContent, setPreviewContent] = useState<string>('');
   const [title, setTitle] = useState<string>('Untitled Document');
+  const [isEditingTitle, setIsEditingTitle] = useState<boolean>(false);
+  const [tempTitle, setTempTitle] = useState<string>('Untitled Document');
   const [viewMode, setViewMode] = useState<ViewMode>('notes');
   const [showPreview, setShowPreview] = useState<boolean>(true);
 
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const sharedTextRef = useRef<Y.Text | null>(null);
+  const sharedTitleRef = useRef<Y.Text | null>(null);
   const prevContentRef = useRef<string>('');
-  const titleDebounceRef = useRef<NodeJS.Timeout | null>(null);
 
   // 1. Debounce Markdown preview parsing to decouple heavy AST renders from 60fps typing
   useEffect(() => {
@@ -38,34 +41,11 @@ export function Editor({ documentId }: { documentId: string }) {
     return () => clearTimeout(handler);
   }, [content]);
 
-  // 2. Debounced document title & metadata persistence to avoid blocking the main thread
-  const updateDocumentTitle = (text: string) => {
-    const firstLine = text.split('\n')[0];
-    const newTitle = firstLine.trim() ? firstLine.slice(0, 30) : 'Untitled Document';
-    setTitle(newTitle);
-
-    if (titleDebounceRef.current) {
-      clearTimeout(titleDebounceRef.current);
-    }
-
-    titleDebounceRef.current = setTimeout(() => {
-      saveDocumentMeta(documentId, newTitle);
-    }, 300);
-  };
-
-  // Cleanup debounce timers on unmount
-  useEffect(() => {
-    return () => {
-      if (titleDebounceRef.current) {
-        clearTimeout(titleDebounceRef.current);
-      }
-    };
-  }, []);
-
-  // 3. Yjs CRDT binding with origin filtering to prevent bidirectional state loops & cursor jumps
+  // 2. Yjs CRDT binding for both document text & collaborative document title
   useEffect(() => {
     if (!doc) return;
 
+    // --- Content CRDT Binding ---
     const yText = doc.getText(`kinetix-text-${documentId}`);
     sharedTextRef.current = yText;
     const initialText = yText.toString();
@@ -73,15 +53,43 @@ export function Editor({ documentId }: { documentId: string }) {
     setPreviewContent(initialText);
     prevContentRef.current = initialText;
 
-    const firstLine = initialText.split('\n')[0];
-    if (firstLine.trim()) {
-      setTitle(firstLine.slice(0, 30));
+    // --- Title CRDT & Persistence Binding ---
+    const yTitle = doc.getText(`kinetix-title-${documentId}`);
+    sharedTitleRef.current = yTitle;
+
+    const storedMeta = getDocumentMeta(documentId);
+    const currentYTitle = yTitle.toString();
+    let initialDocTitle = 'Untitled Document';
+
+    if (currentYTitle.trim()) {
+      initialDocTitle = currentYTitle;
+    } else if (storedMeta?.title?.trim()) {
+      initialDocTitle = storedMeta.title;
+      doc.transact(() => {
+        yTitle.insert(0, initialDocTitle);
+      }, LOCAL_TRANSACTION_ORIGIN);
+    } else {
+      saveDocumentMeta(documentId, initialDocTitle);
     }
 
+    setTitle(initialDocTitle);
+    setTempTitle(initialDocTitle);
+
+    // Observer for remote title changes
+    const titleObserver = (event: Y.YTextEvent) => {
+      if (event.transaction.origin === LOCAL_TRANSACTION_ORIGIN) {
+        return;
+      }
+      const remoteTitle = yTitle.toString() || 'Untitled Document';
+      setTitle(remoteTitle);
+      setTempTitle(remoteTitle);
+      saveDocumentMeta(documentId, remoteTitle);
+    };
+
+    yTitle.observe(titleObserver);
+
+    // Observer for remote content changes
     const observer = (event: Y.YTextEvent) => {
-      // CRITICAL FIX: Skip local transactions!
-      // When local typing dispatches a change, the textarea and React content state are
-      // already up-to-date. Re-applying them here destroys the browser's native caret position.
       if (event.transaction.origin === LOCAL_TRANSACTION_ORIGIN) {
         return;
       }
@@ -127,7 +135,6 @@ export function Editor({ documentId }: { documentId: string }) {
 
         setContent(updatedText);
 
-        // Flawlessly restore caret range after remote DOM update
         requestAnimationFrame(() => {
           if (textareaRef.current && document.activeElement === textareaRef.current) {
             textareaRef.current.setSelectionRange(nextStart, nextEnd);
@@ -136,34 +143,68 @@ export function Editor({ documentId }: { documentId: string }) {
       } else {
         setContent(updatedText);
       }
-
-      // Sync document title from remote changes
-      const line = updatedText.split('\n')[0];
-      const newTitle = line.trim() ? line.slice(0, 30) : 'Untitled Document';
-      setTitle(newTitle);
-      saveDocumentMeta(documentId, newTitle);
     };
 
     yText.observe(observer);
 
+    // Listen for local updates dispatched from the sidebar
+    const handleDocUpdated = (e: Event) => {
+      const detail = (e as CustomEvent<{ id: string; title: string }>).detail;
+      if (detail && detail.id === documentId) {
+        setTitle(detail.title);
+        setTempTitle(detail.title);
+        if (doc && sharedTitleRef.current) {
+          const curr = sharedTitleRef.current.toString();
+          if (curr !== detail.title) {
+            doc.transact(() => {
+              applyTextDelta(sharedTitleRef.current!, curr, detail.title);
+            }, LOCAL_TRANSACTION_ORIGIN);
+          }
+        }
+      }
+    };
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('kinetix:documents-updated', handleDocUpdated);
+    }
+
     return () => {
       yText.unobserve(observer);
+      yTitle.unobserve(titleObserver);
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('kinetix:documents-updated', handleDocUpdated);
+      }
     };
   }, [doc, documentId]);
 
-  // 4. Synchronous, ultra-responsive local input handler
+  // 3. Title save handler (manual rename)
+  const handleSaveTitle = () => {
+    const trimmed = tempTitle.trim() || 'Untitled Document';
+    setTitle(trimmed);
+    setTempTitle(trimmed);
+    setIsEditingTitle(false);
+    saveDocumentMeta(documentId, trimmed);
+
+    // Sync title change to peers via Yjs CRDT
+    if (doc && sharedTitleRef.current) {
+      const currentYTitle = sharedTitleRef.current.toString();
+      if (currentYTitle !== trimmed) {
+        doc.transact(() => {
+          applyTextDelta(sharedTitleRef.current!, currentYTitle, trimmed);
+        }, LOCAL_TRANSACTION_ORIGIN);
+      }
+    }
+  };
+
+  // 4. Synchronous, ultra-responsive local text input handler
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     const oldText = prevContentRef.current;
 
-    // Synchronously update textarea state so typing feels instantaneous (native speed)
     setContent(newText);
     prevContentRef.current = newText;
 
-    // Debounce the metadata save to eliminate synchronous localStorage IO lag
-    updateDocumentTitle(newText);
-
-    // Dispatch minimal character-level delta tagged with our local origin
+    // Dispatch character-level delta to Y.Text
     if (doc && sharedTextRef.current) {
       doc.transact(() => {
         applyTextDelta(sharedTextRef.current!, oldText, newText);
@@ -206,10 +247,40 @@ export function Editor({ documentId }: { documentId: string }) {
     <div className="flex flex-col w-full h-full p-6 md:p-8 max-w-7xl mx-auto">
       {/* Document Header & Mode Controls */}
       <div className="flex flex-wrap items-center justify-between gap-4 mb-6 pb-4 border-b border-zinc-800">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight text-zinc-100 truncate max-w-md">
-            {title}
-          </h1>
+        <div className="flex flex-col">
+          {isEditingTitle ? (
+            <div className="flex items-center gap-2 max-w-md">
+              <input
+                ref={titleInputRef}
+                type="text"
+                value={tempTitle}
+                onChange={(e) => setTempTitle(e.target.value)}
+                onBlur={handleSaveTitle}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSaveTitle();
+                  } else if (e.key === 'Escape') {
+                    setTempTitle(title);
+                    setIsEditingTitle(false);
+                  }
+                }}
+                className="text-xl font-semibold tracking-tight text-zinc-100 bg-zinc-900 border border-zinc-700 rounded-lg px-2.5 py-1 focus:outline-none focus:ring-2 focus:ring-zinc-600 w-full shadow-sm"
+                autoFocus
+              />
+            </div>
+          ) : (
+            <h1
+              onClick={() => {
+                setTempTitle(title);
+                setIsEditingTitle(true);
+              }}
+              className="group flex items-center gap-2 text-xl font-semibold tracking-tight text-zinc-100 truncate max-w-md cursor-pointer hover:text-zinc-300 transition-colors"
+              title="Click to rename document"
+            >
+              <span className="truncate">{title}</span>
+              <Pencil className="w-3.5 h-3.5 text-zinc-500 opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+            </h1>
+          )}
           <p className="text-xs text-zinc-500 mt-0.5">
             {wordCount} words · {charCount} characters
           </p>

@@ -3,14 +3,22 @@
 import React, { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { getDocuments, saveDocumentMeta, deleteDocumentMeta, DocMeta } from '@/lib/storage';
-import { Plus, FileText, Trash2, Zap } from 'lucide-react';
+import { Plus, FileText, Trash2, Pencil, Zap } from 'lucide-react';
 
 export function Sidebar({ currentDocId }: { currentDocId: string }) {
   const router = useRouter();
   const [docs, setDocs] = useState<DocMeta[]>([]);
+  const [editingDocId, setEditingDocId] = useState<string | null>(null);
+  const [editTitle, setEditTitle] = useState<string>('');
 
   useEffect(() => {
-    setDocs(getDocuments());
+    const updateList = () => setDocs(getDocuments());
+    updateList();
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('kinetix:documents-updated', updateList);
+      return () => window.removeEventListener('kinetix:documents-updated', updateList);
+    }
   }, [currentDocId]);
 
   const handleCreateNew = () => {
@@ -18,6 +26,19 @@ export function Sidebar({ currentDocId }: { currentDocId: string }) {
     saveDocumentMeta(newId, 'Untitled Document');
     setDocs(getDocuments());
     router.push(`/doc/${newId}`);
+  };
+
+  const handleStartRename = (e: React.MouseEvent, docItem: DocMeta) => {
+    e.stopPropagation();
+    setEditingDocId(docItem.id);
+    setEditTitle(docItem.title || 'Untitled Document');
+  };
+
+  const handleConfirmRename = (id: string) => {
+    const trimmed = editTitle.trim() || 'Untitled Document';
+    saveDocumentMeta(id, trimmed);
+    setEditingDocId(null);
+    setDocs(getDocuments());
   };
 
   const handleDelete = (e: React.MouseEvent, id: string) => {
@@ -64,6 +85,35 @@ export function Sidebar({ currentDocId }: { currentDocId: string }) {
         </div>
         {docs.map((doc) => {
           const isActive = currentDocId === doc.id;
+          const isEditing = editingDocId === doc.id;
+
+          if (isEditing) {
+            return (
+              <div
+                key={doc.id}
+                onClick={(e) => e.stopPropagation()}
+                className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700"
+              >
+                <FileText className="w-3.5 h-3.5 shrink-0 text-zinc-400" />
+                <input
+                  type="text"
+                  value={editTitle}
+                  onChange={(e) => setEditTitle(e.target.value)}
+                  onBlur={() => handleConfirmRename(doc.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      handleConfirmRename(doc.id);
+                    } else if (e.key === 'Escape') {
+                      setEditingDocId(null);
+                    }
+                  }}
+                  className="bg-transparent text-xs text-zinc-100 w-full focus:outline-none placeholder:text-zinc-600"
+                  autoFocus
+                />
+              </div>
+            );
+          }
+
           return (
             <div
               key={doc.id}
@@ -78,15 +128,24 @@ export function Sidebar({ currentDocId }: { currentDocId: string }) {
                 <FileText className="w-3.5 h-3.5 shrink-0 text-zinc-500" />
                 <span className="truncate">{doc.title || 'Untitled Document'}</span>
               </div>
-              {docs.length > 1 && (
+              <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                 <button
-                  onClick={(e) => handleDelete(e, doc.id)}
-                  className="opacity-0 group-hover:opacity-100 p-1 hover:text-red-400 text-zinc-500 transition-opacity"
-                  title="Delete Document"
+                  onClick={(e) => handleStartRename(e, doc)}
+                  className="p-1 hover:text-zinc-200 text-zinc-500 transition-colors"
+                  title="Rename Document"
                 >
-                  <Trash2 className="w-3.5 h-3.5" />
+                  <Pencil className="w-3.5 h-3.5" />
                 </button>
-              )}
+                {docs.length > 1 && (
+                  <button
+                    onClick={(e) => handleDelete(e, doc.id)}
+                    className="p-1 hover:text-red-400 text-zinc-500 transition-colors"
+                    title="Delete Document"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
             </div>
           );
         })}
@@ -100,4 +159,3 @@ export function Sidebar({ currentDocId }: { currentDocId: string }) {
     </aside>
   );
 }
-

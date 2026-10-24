@@ -72,7 +72,7 @@ export function ConnectionStatus() {
       className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-950 text-emerald-400 border border-emerald-800/50 shadow-sm"
     >
       <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-      <span>Live & Syncing</span>
+      <span>Live Syncing</span>
     </span>
   );
 }
