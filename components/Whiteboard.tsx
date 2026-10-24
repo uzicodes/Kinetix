@@ -3,7 +3,7 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
 import * as Y from 'yjs';
-import { Pencil, Eraser, Undo2, Trash2, ImageDown } from 'lucide-react';
+import { MousePointer2, Pencil, Eraser, Undo2, Trash2, Download, ImageUp } from 'lucide-react';
 
 export interface Point {
   x: number;
@@ -17,6 +17,17 @@ export interface Stroke {
   width: number;
 }
 
+export interface BoardImage {
+  id: string;
+  dataUrl: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+type ToolMode = 'select' | 'pen' | 'eraser';
+
 const PALETTE = [
   { label: 'Emerald', value: '#10B981' },
   { label: 'Cyan', value: '#06B6D4' },
@@ -28,7 +39,6 @@ const PALETTE = [
 
 const THICKNESS_PRESETS = [2, 4, 8, 14];
 
-// Distance between a point and a line segment
 function distanceToSegment(p: Point, a: Point, b: Point): number {
   const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2;
   if (l2 === 0) return Math.hypot(p.x - a.x, p.y - a.y);
@@ -41,18 +51,36 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   const { doc } = useWorkspace();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [activeTool, setActiveTool] = useState<'pen' | 'eraser'>('pen');
+  const [activeTool, setActiveTool] = useState<ToolMode>('pen');
   const [activeColor, setActiveColor] = useState<string>('#10B981');
   const [strokeWidth, setStrokeWidth] = useState<number>(4);
   const [strokeCount, setStrokeCount] = useState<number>(0);
+  const [imageCount, setImageCount] = useState<number>(0);
+
+  // Selection & drag state for images
+  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
+  const [hoveredImageId, setHoveredImageId] = useState<string | null>(null);
+  const dragInfoRef = useRef<{
+    id: string;
+    offsetX: number;
+    offsetY: number;
+    currentX: number;
+    currentY: number;
+  } | null>(null);
 
   const isCustomColor = !PALETTE.some((c) => c.value.toLowerCase() === activeColor.toLowerCase());
 
   const yStrokesRef = useRef<Y.Array<Stroke> | null>(null);
+  const yImagesRef = useRef<Y.Map<BoardImage> | null>(null);
   const strokesRef = useRef<Stroke[]>([]);
+  const imagesRef = useRef<BoardImage[]>([]);
   const currentStrokeRef = useRef<Stroke | null>(null);
   const isDrawing = useRef<boolean>(false);
+
+  // In-memory image cache to eliminate re-rendering flicker
+  const imageCacheRef = useRef<Map<string, HTMLImageElement>>(new Map());
 
   // Redraw entire canvas with high DPI scaling
   const redraw = useCallback(() => {
@@ -67,6 +95,52 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
     ctx.clearRect(0, 0, width, height);
 
+    // 1. Render uploaded images FIRST (so strokes can be drawn on top of them)
+    imagesRef.current.forEach((item) => {
+      let cachedImg = imageCacheRef.current.get(item.id);
+      if (!cachedImg) {
+        cachedImg = new Image();
+        cachedImg.src = item.dataUrl;
+        cachedImg.onload = () => {
+          imageCacheRef.current.set(item.id, cachedImg!);
+          redraw();
+        };
+        imageCacheRef.current.set(item.id, cachedImg);
+      } else if (cachedImg.complete && cachedImg.naturalWidth > 0) {
+        ctx.drawImage(cachedImg, item.x, item.y, item.width, item.height);
+
+        // Visual feedback: selection / hover bounding box in 'select' mode
+        const isSelected = item.id === selectedImageId;
+        const isHovered = item.id === hoveredImageId && activeTool === 'select';
+
+        if (isSelected || isHovered) {
+          ctx.save();
+          ctx.strokeStyle = isSelected ? '#38bdf8' : '#38bdf880'; // sky-400
+          ctx.lineWidth = 2;
+          ctx.setLineDash(isSelected ? [6, 4] : [4, 4]);
+          ctx.strokeRect(item.x - 2, item.y - 2, item.width + 4, item.height + 4);
+
+          // Corner handles for active selection
+          if (isSelected) {
+            ctx.fillStyle = '#38bdf8';
+            ctx.setLineDash([]);
+            const handleSize = 6;
+            const corners = [
+              [item.x - 2, item.y - 2],
+              [item.x + item.width + 2, item.y - 2],
+              [item.x - 2, item.y + item.height + 2],
+              [item.x + item.width + 2, item.y + item.height + 2],
+            ];
+            corners.forEach(([cx, cy]) => {
+              ctx.fillRect(cx - handleSize / 2, cy - handleSize / 2, handleSize, handleSize);
+            });
+          }
+          ctx.restore();
+        }
+      }
+    });
+
+    // 2. Render freehand strokes on top of images
     const renderStroke = (stroke: Stroke) => {
       if (stroke.points.length === 0) return;
 
@@ -100,7 +174,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     if (currentStrokeRef.current) {
       renderStroke(currentStrokeRef.current);
     }
-  }, []);
+  }, [selectedImageId, hoveredImageId, activeTool]);
 
   // Handle Canvas Resizing with Device Pixel Ratio
   useEffect(() => {
@@ -129,31 +203,78 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     return () => observer.disconnect();
   }, [redraw]);
 
-  // Bind to shared Y.Array
+  // Bind to shared Y.Array for Strokes & Y.Map for Images
   useEffect(() => {
     if (!doc) return;
 
+    // --- Strokes CRDT Array ---
     const yStrokes = doc.getArray<Stroke>(`kinetix-strokes-${documentId}`);
     yStrokesRef.current = yStrokes;
+    const initialStrokes = yStrokes.toArray();
+    strokesRef.current = initialStrokes;
+    setStrokeCount(initialStrokes.length);
 
-    const initial = yStrokes.toArray();
-    strokesRef.current = initial;
-    setStrokeCount(initial.length);
-    redraw();
-
-    const observer = () => {
+    const strokesObserver = () => {
       const updated = yStrokes.toArray();
       strokesRef.current = updated;
       setStrokeCount(updated.length);
       redraw();
     };
+    yStrokes.observe(strokesObserver);
 
-    yStrokes.observe(observer);
+    // --- Images CRDT Map (Y.Map for precise independent coordinate mutations) ---
+    const yImages = doc.getMap<BoardImage>(`kinetix-images-${documentId}`);
+    yImagesRef.current = yImages;
+
+    const syncImages = () => {
+      const currentList: BoardImage[] = [];
+      yImages.forEach((val) => {
+        currentList.push(val);
+      });
+      imagesRef.current = currentList;
+      setImageCount(currentList.length);
+      redraw();
+    };
+
+    syncImages();
+
+    const imagesObserver = () => {
+      syncImages();
+    };
+    yImages.observe(imagesObserver);
+
+    redraw();
 
     return () => {
-      yStrokes.unobserve(observer);
+      yStrokes.unobserve(strokesObserver);
+      yImages.unobserve(imagesObserver);
     };
   }, [doc, documentId, redraw]);
+
+  // Keyboard shortcut: Delete or Backspace removes the currently selected image
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        document.activeElement &&
+        (document.activeElement.tagName === 'INPUT' ||
+          document.activeElement.tagName === 'TEXTAREA')
+      ) {
+        return;
+      }
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedImageId && yImagesRef.current && doc) {
+        e.preventDefault();
+        const idToDelete = selectedImageId;
+        setSelectedImageId(null);
+        doc.transact(() => {
+          yImagesRef.current!.delete(idToDelete);
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [doc, selectedImageId]);
 
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): Point => {
     const canvas = canvasRef.current;
@@ -168,7 +289,39 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const point = getCanvasPoint(e);
 
-    if (activeTool === 'pen') {
+    if (activeTool === 'select') {
+      // Hit detection: iterate from topmost to bottommost image
+      const images = imagesRef.current;
+      let hitImage: BoardImage | null = null;
+      for (let i = images.length - 1; i >= 0; i--) {
+        const img = images[i];
+        if (
+          point.x >= img.x &&
+          point.x <= img.x + img.width &&
+          point.y >= img.y &&
+          point.y <= img.y + img.height
+        ) {
+          hitImage = img;
+          break;
+        }
+      }
+
+      if (hitImage) {
+        setSelectedImageId(hitImage.id);
+        dragInfoRef.current = {
+          id: hitImage.id,
+          offsetX: point.x - hitImage.x,
+          offsetY: point.y - hitImage.y,
+          currentX: hitImage.x,
+          currentY: hitImage.y,
+        };
+        (e.target as HTMLElement).setPointerCapture(e.pointerId);
+      } else {
+        setSelectedImageId(null);
+        dragInfoRef.current = null;
+      }
+      redraw();
+    } else if (activeTool === 'pen') {
       isDrawing.current = true;
       currentStrokeRef.current = {
         id: `stroke-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -186,7 +339,50 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     const point = getCanvasPoint(e);
 
-    if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
+    if (activeTool === 'select') {
+      if (dragInfoRef.current) {
+        // Dragging: update coordinates locally at 60fps without flooding WebSocket
+        const newX = Math.round(point.x - dragInfoRef.current.offsetX);
+        const newY = Math.round(point.y - dragInfoRef.current.offsetY);
+        dragInfoRef.current.currentX = newX;
+        dragInfoRef.current.currentY = newY;
+
+        const targetId = dragInfoRef.current.id;
+        const imgIndex = imagesRef.current.findIndex((img) => img.id === targetId);
+        if (imgIndex !== -1) {
+          imagesRef.current[imgIndex] = {
+            ...imagesRef.current[imgIndex],
+            x: newX,
+            y: newY,
+          };
+        }
+        redraw();
+      } else {
+        // Hover hit detection to update cursor style
+        const images = imagesRef.current;
+        let hit = false;
+        for (let i = images.length - 1; i >= 0; i--) {
+          const img = images[i];
+          if (
+            point.x >= img.x &&
+            point.x <= img.x + img.width &&
+            point.y >= img.y &&
+            point.y <= img.y + img.height
+          ) {
+            hit = true;
+            if (hoveredImageId !== img.id) {
+              setHoveredImageId(img.id);
+              redraw();
+            }
+            break;
+          }
+        }
+        if (!hit && hoveredImageId !== null) {
+          setHoveredImageId(null);
+          redraw();
+        }
+      }
+    } else if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
       currentStrokeRef.current.points.push(point);
       redraw();
     } else if (activeTool === 'eraser' && (e.buttons === 1 || e.pressure > 0)) {
@@ -195,7 +391,31 @@ export function Whiteboard({ documentId }: { documentId: string }) {
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
+    if (activeTool === 'select' && dragInfoRef.current) {
+      const { id, currentX, currentY } = dragInfoRef.current;
+      dragInfoRef.current = null;
+
+      try {
+        (e.target as HTMLElement).releasePointerCapture(e.pointerId);
+      } catch {
+        // ignore
+      }
+
+      // Commit final coordinates to Y.Map and broadcast to peers
+      if (doc && yImagesRef.current) {
+        const existing = yImagesRef.current.get(id);
+        if (existing && (existing.x !== currentX || existing.y !== currentY)) {
+          doc.transact(() => {
+            yImagesRef.current!.set(id, {
+              ...existing,
+              x: currentX,
+              y: currentY,
+            });
+          });
+        }
+      }
+      redraw();
+    } else if (activeTool === 'pen' && isDrawing.current && currentStrokeRef.current) {
       isDrawing.current = false;
       const strokeToSave = currentStrokeRef.current;
       currentStrokeRef.current = null;
@@ -234,22 +454,119 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     }
   };
 
+  // Image Upload Handler with offscreen compression
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !doc || !yImagesRef.current) return;
+
+    e.target.value = '';
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const rawDataUrl = event.target?.result as string;
+      if (!rawDataUrl) return;
+
+      const img = new Image();
+      img.onload = () => {
+        // Downscale offscreen to avoid WebSocket / CRDT payload bloating
+        const maxDim = 800;
+        let targetWidth = img.width;
+        let targetHeight = img.height;
+
+        if (targetWidth > maxDim || targetHeight > maxDim) {
+          if (targetWidth > targetHeight) {
+            targetHeight = Math.round((targetHeight * maxDim) / targetWidth);
+            targetWidth = maxDim;
+          } else {
+            targetWidth = Math.round((targetWidth * maxDim) / targetHeight);
+            targetHeight = maxDim;
+          }
+        }
+
+        const offscreen = document.createElement('canvas');
+        offscreen.width = targetWidth;
+        offscreen.height = targetHeight;
+        const offCtx = offscreen.getContext('2d');
+        if (!offCtx) return;
+
+        offCtx.drawImage(img, 0, 0, targetWidth, targetHeight);
+        const compressedDataUrl = offscreen.toDataURL(
+          file.type === 'image/png' ? 'image/png' : 'image/jpeg',
+          0.85
+        );
+
+        // Display size on canvas (max width 360px preserving ratio)
+        const displayMaxWidth = 360;
+        let displayWidth = targetWidth;
+        let displayHeight = targetHeight;
+        if (displayWidth > displayMaxWidth) {
+          displayHeight = Math.round((displayHeight * displayMaxWidth) / displayWidth);
+          displayWidth = displayMaxWidth;
+        }
+
+        const canvas = canvasRef.current;
+        const dpr = window.devicePixelRatio || 1;
+        const cWidth = canvas ? canvas.width / dpr : 600;
+        const cHeight = canvas ? canvas.height / dpr : 500;
+        const posX = Math.max(20, Math.round((cWidth - displayWidth) / 2));
+        const posY = Math.max(60, Math.round((cHeight - displayHeight) / 2));
+
+        const boardImage: BoardImage = {
+          id: `img-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+          dataUrl: compressedDataUrl,
+          x: posX,
+          y: posY,
+          width: displayWidth,
+          height: displayHeight,
+        };
+
+        // Cache image object immediately
+        imageCacheRef.current.set(boardImage.id, img);
+
+        // Commit to Y.Map
+        doc.transact(() => {
+          yImagesRef.current!.set(boardImage.id, boardImage);
+        });
+
+        // Auto-select and switch to Select tool so user can reposition immediately
+        setSelectedImageId(boardImage.id);
+        setActiveTool('select');
+        redraw();
+      };
+      img.src = rawDataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
+
   const handleUndo = () => {
-    if (!yStrokesRef.current || !doc) return;
+    if (!doc) return;
     doc.transact(() => {
-      const yStrokes = yStrokesRef.current!;
-      if (yStrokes.length > 0) {
-        yStrokes.delete(yStrokes.length - 1, 1);
+      if (yStrokesRef.current && yStrokesRef.current.length > 0) {
+        yStrokesRef.current.delete(yStrokesRef.current.length - 1, 1);
+      } else if (yImagesRef.current && yImagesRef.current.size > 0) {
+        const keys = Array.from(yImagesRef.current.keys());
+        const lastKey = keys[keys.length - 1];
+        if (lastKey) {
+          yImagesRef.current.delete(lastKey);
+          if (selectedImageId === lastKey) {
+            setSelectedImageId(null);
+          }
+        }
       }
     });
   };
 
   const handleClear = () => {
-    if (!yStrokesRef.current || !doc) return;
+    if (!doc) return;
     doc.transact(() => {
-      const yStrokes = yStrokesRef.current!;
-      if (yStrokes.length > 0) {
-        yStrokes.delete(0, yStrokes.length);
+      if (yStrokesRef.current && yStrokesRef.current.length > 0) {
+        yStrokesRef.current.delete(0, yStrokesRef.current.length);
+      }
+      if (yImagesRef.current) {
+        for (const key of Array.from(yImagesRef.current.keys())) {
+          yImagesRef.current.delete(key);
+        }
+        setSelectedImageId(null);
       }
     });
   };
@@ -258,18 +575,15 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // Create an offscreen export canvas to composite a clean dark background
     const exportCanvas = document.createElement('canvas');
     exportCanvas.width = canvas.width;
     exportCanvas.height = canvas.height;
     const ctx = exportCanvas.getContext('2d');
     if (!ctx) return;
 
-    // Paint clean dark background matching UI theme (#09090b / zinc-950)
     ctx.fillStyle = '#09090b';
     ctx.fillRect(0, 0, exportCanvas.width, exportCanvas.height);
 
-    // Draw faint grid dots matching canvas aesthetic
     ctx.fillStyle = '#27272a';
     const dpr = window.devicePixelRatio || 1;
     const dotSpacing = 24 * dpr;
@@ -282,10 +596,9 @@ export function Whiteboard({ documentId }: { documentId: string }) {
       }
     }
 
-    // Render whiteboard strokes on top
+    // Render whiteboard composite (images + strokes) on top
     ctx.drawImage(canvas, 0, 0);
 
-    // Trigger file download
     const dataUrl = exportCanvas.toDataURL('image/png');
     const link = document.createElement('a');
     link.href = dataUrl;
@@ -295,14 +608,55 @@ export function Whiteboard({ documentId }: { documentId: string }) {
     document.body.removeChild(link);
   };
 
+  const hasContent = strokeCount > 0 || imageCount > 0;
+
+  // Dynamic canvas cursor
+  const getCanvasCursor = () => {
+    if (activeTool === 'select') {
+      if (dragInfoRef.current) return 'cursor-grabbing';
+      if (hoveredImageId) return 'cursor-grab';
+      return 'cursor-default';
+    }
+    if (activeTool === 'pen') return 'cursor-crosshair';
+    if (activeTool === 'eraser') return 'cursor-cell';
+    return 'cursor-default';
+  };
+
   return (
     <div ref={containerRef} className="relative flex flex-col w-full h-full min-h-[70vh] select-none">
+      {/* Hidden File Input for Image Upload */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/png, image/jpeg, image/jpg"
+        onChange={handleImageUpload}
+        className="hidden"
+      />
+
       {/* Floating Whiteboard Toolbar */}
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-20 flex flex-nowrap items-center gap-1.5 sm:gap-2 p-1.5 bg-zinc-900/90 backdrop-blur-md border border-zinc-800 rounded-2xl shadow-2xl max-w-[96vw] overflow-x-auto">
-        {/* Tool Mode: Pen vs Eraser */}
+        {/* Tool Mode: Select vs Pen vs Eraser */}
         <div className="flex items-center gap-1 bg-zinc-950/60 p-1 rounded-xl border border-zinc-800/80 shrink-0">
           <button
-            onClick={() => setActiveTool('pen')}
+            onClick={() => {
+              setActiveTool('select');
+              redraw();
+            }}
+            className={`p-1.5 rounded-lg transition-colors ${
+              activeTool === 'select'
+                ? 'bg-zinc-800 text-sky-400 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+            title="Select & Move Images"
+          >
+            <MousePointer2 className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => {
+              setActiveTool('pen');
+              setSelectedImageId(null);
+              redraw();
+            }}
             className={`p-1.5 rounded-lg transition-colors ${
               activeTool === 'pen'
                 ? 'bg-zinc-800 text-emerald-400 shadow-sm'
@@ -313,7 +667,11 @@ export function Whiteboard({ documentId }: { documentId: string }) {
             <Pencil className="w-4 h-4" />
           </button>
           <button
-            onClick={() => setActiveTool('eraser')}
+            onClick={() => {
+              setActiveTool('eraser');
+              setSelectedImageId(null);
+              redraw();
+            }}
             className={`p-1.5 rounded-lg transition-colors ${
               activeTool === 'eraser'
                 ? 'bg-zinc-800 text-rose-400 shadow-sm'
@@ -327,7 +685,7 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
-        {/* Color Palette */}
+        {/* Color Palette (Active during Pen mode) */}
         <div className="flex items-center gap-1 px-0.5 shrink-0">
           {PALETTE.map((c) => (
             <button
@@ -377,7 +735,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
         {/* Thickness Toggle & Slider */}
         {activeTool === 'pen' && (
           <div className="flex items-center gap-1.5 bg-zinc-950/60 px-2 py-1 rounded-xl border border-zinc-800/80 shrink-0">
-            {/* Visual preset toggles (dots of varying thickness) */}
             <div className="flex items-center gap-0.5">
               {THICKNESS_PRESETS.map((size) => (
                 <button
@@ -404,7 +761,6 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
             <div className="h-4 w-px bg-zinc-800" />
 
-            {/* Range slider for custom thickness */}
             <div className="flex items-center gap-1">
               <input
                 type="range"
@@ -424,19 +780,19 @@ export function Whiteboard({ documentId }: { documentId: string }) {
 
         <div className="h-5 w-px bg-zinc-800 shrink-0" />
 
-        {/* Actions: Undo / Clear / Export PNG - strictly on same line */}
+        {/* Actions: Undo / Clear / Divider / Upload Image / Save (Download) */}
         <div className="flex items-center gap-0.5 shrink-0">
           <button
             onClick={handleUndo}
-            disabled={strokeCount === 0}
+            disabled={!hasContent}
             className="p-1.5 text-zinc-400 hover:text-zinc-200 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
-            title="Undo Last Stroke"
+            title="Undo"
           >
             <Undo2 className="w-4 h-4" />
           </button>
           <button
             onClick={handleClear}
-            disabled={strokeCount === 0}
+            disabled={!hasContent}
             className="p-1.5 text-zinc-400 hover:text-rose-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
             title="Clear Board"
           >
@@ -444,27 +800,31 @@ export function Whiteboard({ documentId }: { documentId: string }) {
           </button>
           <div className="h-4 w-px bg-zinc-800 my-auto mx-0.5" />
           <button
-            onClick={handleExportPNG}
-            disabled={strokeCount === 0}
-            className="px-2 py-1 text-zinc-400 hover:text-emerald-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg flex items-center gap-1 text-xs font-medium"
-            title="Export Whiteboard as PNG"
+            onClick={() => fileInputRef.current?.click()}
+            className="p-1.5 text-zinc-400 hover:text-emerald-400 transition-colors rounded-lg"
+            title="Upload Image (PNG, JPG)"
           >
-            <ImageDown className="w-4 h-4" />
-            <span className="text-[11px] hidden sm:inline">PNG</span>
+            <ImageUp className="w-4 h-4" />
+          </button>
+          <button
+            onClick={handleExportPNG}
+            disabled={!hasContent}
+            className="p-1.5 text-zinc-400 hover:text-emerald-400 disabled:opacity-40 disabled:hover:text-zinc-400 transition-colors rounded-lg"
+            title="Download / Save Board as PNG"
+          >
+            <Download className="w-4 h-4" />
           </button>
         </div>
       </div>
 
-      {/* HTML5 Canvas with Dot-Grid Background */}
+      {/* HTML5 Canvas with Dynamic Cursor & Dot-Grid Background */}
       <canvas
         ref={canvasRef}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        className={`w-full h-full min-h-[70vh] bg-zinc-950 rounded-2xl border border-zinc-800/80 shadow-inner ${
-          activeTool === 'pen' ? 'cursor-crosshair' : 'cursor-cell'
-        }`}
+        className={`w-full h-full min-h-[70vh] bg-zinc-950 rounded-2xl border border-zinc-800/80 shadow-inner ${getCanvasCursor()}`}
         style={{
           backgroundImage: 'radial-gradient(circle, #27272a 1px, transparent 1px)',
           backgroundSize: '24px 24px',
