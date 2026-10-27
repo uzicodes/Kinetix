@@ -2,7 +2,7 @@
 
 import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { useWorkspace } from '@/app/providers/WorkspaceProvider';
-import { getDocumentMeta, saveDocumentMeta } from '@/lib/storage';
+import { getDocumentMeta, saveDocumentMeta, WELCOME_MARKDOWN } from '@/lib/storage';
 import { applyTextDelta } from '@/lib/diff';
 import { MarkdownPreview } from '@/components/MarkdownPreview';
 import { Avatars } from '@/components/Avatars';
@@ -48,7 +48,16 @@ export function Editor({ documentId }: { documentId: string }) {
     // --- Content CRDT Binding ---
     const yText = doc.getText(`kinetix-text-${documentId}`);
     sharedTextRef.current = yText;
-    const initialText = yText.toString();
+    let initialText = yText.toString();
+
+    // Auto-populate welcome document if opening welcome-doc and content is empty
+    if (documentId === 'welcome-doc' && initialText.trim().length === 0) {
+      doc.transact(() => {
+        yText.insert(0, WELCOME_MARKDOWN);
+      }, LOCAL_TRANSACTION_ORIGIN);
+      initialText = WELCOME_MARKDOWN;
+    }
+
     setContent(initialText);
     setPreviewContent(initialText);
     prevContentRef.current = initialText;
@@ -59,7 +68,7 @@ export function Editor({ documentId }: { documentId: string }) {
 
     const storedMeta = getDocumentMeta(documentId);
     const currentYTitle = yTitle.toString();
-    let initialDocTitle = 'Untitled Document';
+    let initialDocTitle = documentId === 'welcome-doc' ? 'Welcome to Kinetix ⚡️' : 'Untitled Document';
 
     if (currentYTitle.trim()) {
       initialDocTitle = currentYTitle;

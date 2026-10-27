@@ -1,3 +1,5 @@
+export { WELCOME_MARKDOWN } from './welcome';
+
 export interface DocMeta {
   id: string;
   title: string;
@@ -13,7 +15,7 @@ export function getDocuments(): DocMeta[] {
   if (!data) {
     // Default initial document if none exist
     const defaultDocs: DocMeta[] = [
-      { id: 'welcome-doc', title: 'Getting Started with Kinetix', updatedAt: Date.now() }
+      { id: 'welcome-doc', title: 'Welcome to Kinetix ⚡️', updatedAt: Date.now() }
     ];
     localStorage.setItem(STORAGE_KEY, JSON.stringify(defaultDocs));
     return defaultDocs;

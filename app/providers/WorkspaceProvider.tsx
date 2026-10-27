@@ -5,6 +5,7 @@ import * as Y from 'yjs';
 import { IndexeddbPersistence } from 'y-indexeddb';
 import { useRoom } from '@liveblocks/react';
 import { LiveblocksYjsProvider } from '@liveblocks/yjs';
+import { WELCOME_MARKDOWN } from '@/lib/welcome';
 
 interface WorkspaceContextType {
   doc: Y.Doc | null;
@@ -44,6 +45,14 @@ export function WorkspaceProvider({
 
     idbProvider.on('synced', () => {
       console.log(`Loaded document ${documentId} from IndexedDB`);
+      if (documentId === 'welcome-doc') {
+        const yText = yDoc.getText(`kinetix-text-${documentId}`);
+        if (yText.length === 0) {
+          yDoc.transact(() => {
+            yText.insert(0, WELCOME_MARKDOWN);
+          });
+        }
+      }
     });
 
     yProvider.on('sync', (synced: boolean) => {
